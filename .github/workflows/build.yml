@@ -1,0 +1,119 @@
+name: Build installer
+
+# Deliberately NOT run on every push.
+#
+# This has to build on a Windows runner (WPF, and Inno Setup), and on GitHub's free plan
+# Windows minutes bill at 2x against a 2,000-minute monthly allowance — so a full run of this
+# workflow costs roughly 10-14 billable minutes while the repository is private. Building on
+# every commit would burn the month in a few days' work.
+#
+# Once the repository is public, Actions minutes on standard runners are free and unlimited,
+# and a `push:` trigger on main can safely be added below.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp, e.g. 1.1 (default 0.0 for a scratch build)'
+        required: false
+        default: '0.0'
+  push:
+    tags: ['v*']
+
+# A second run started while the first is still going cancels it, rather than paying for both.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # to create the Release on a tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Work out the version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '${{ inputs.version }}' }
+          if (-not $v) { $v = '0.0' }
+          $v = $v -replace '^v', ''
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "building version $v"
+
+      # ffmpeg is ~98 MB and deliberately not in the repository. The cache is per-repository and
+      # generous (10 GB) on every plan, so this downloads once rather than once per run.
+      - name: Restore cached ffmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: tools/ffmpeg.exe
+          key: ffmpeg-win64-gpl-v1
+
+      - name: Fetch ffmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # BtbN's builds are GPL (libx264 included) and hosted on GitHub, which is markedly
+          # more reliable from a runner than a third-party mirror.
+          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+          Invoke-WebRequest $url -OutFile ffmpeg.zip -UseBasicParsing
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract -Force
+          $exe = Get-ChildItem ffmpeg-extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          New-Item -ItemType Directory -Path tools -Force | Out-Null
+          Copy-Item $exe.FullName tools/ffmpeg.exe -Force
+          Remove-Item ffmpeg.zip, ffmpeg-extract -Recurse -Force
+          & tools/ffmpeg.exe -version | Select-Object -First 1
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          if (Get-Command ISCC.exe -ErrorAction SilentlyContinue) {
+            Write-Host 'Inno Setup already on the image'
+          } elseif (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") {
+            Write-Host 'Inno Setup 6 already installed'
+          } else {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build drop and installer
+        shell: pwsh
+        run: ./publish.ps1 -Installer -Version ${{ steps.ver.outputs.version }}
+
+      - name: Check what was produced
+        shell: pwsh
+        run: Get-ChildItem dist -File | ForEach-Object { '{0,-40} {1,8:N1} MB' -f $_.Name, ($_.Length / 1MB) }
+
+      # Manual runs keep the installer as an artifact briefly. Artifact storage on the free plan
+      # is 500 MB total and the installer is ~100 MB, so this expires fast on purpose.
+      - name: Upload installer
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: PierCam-${{ steps.ver.outputs.version }}-Setup
+          path: dist/*Setup.exe
+          retention-days: 7
+          compression-level: 0   # already compressed; recompressing wastes a minute
+
+      # Tagged builds go to a Release instead. Release assets do not count against the Actions
+      # artifact allowance, and they are what people actually download.
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            (Get-ChildItem dist/*Setup.exe).FullName `
+            (Get-ChildItem dist/*.zip).FullName `
+            --title "PierCam ${{ steps.ver.outputs.version }}" `
+            --generate-notes `
+            --notes "Run the installer, or unzip the portable build. Windows will warn that it is unsigned. Needs ZWO's ASIStudio for ASICamera2.dll - see READ-ME-FIRST.txt."

@@ -51,8 +51,21 @@ it will not take a mono imaging camera or guider away from an imaging suite.
 
 ## Installing
 
-Download the release zip, unzip the whole folder, run `PierCam.exe`. Nothing else to install:
-the .NET runtime is inside the executable. Keep `tools\ffmpeg.exe` beside it.
+Two builds are attached to each [release](https://github.com/YoruDev-Ryland/PierCam/releases):
+
+- **`PierCam-<version>-Setup.exe`** — a normal Windows installer. It installs per-user into
+  `%LocalAppData%\Programs\PierCam` and raises **no UAC prompt**, which matters on observatory
+  machines driven remotely by an account without administrator rights. Choose a machine-wide
+  install on the first page if you would rather. It adds Start Menu entries and an uninstaller
+  in Add/Remove Programs.
+- **`PierCam-<version>-win-x64.zip`** — the same files, portable. Unzip anywhere and run
+  `PierCam.exe`.
+
+Nothing else to install: the .NET runtime is inside the executable. Keep `tools\ffmpeg.exe`
+beside it.
+
+Uninstalling leaves `%AppData%\PierCam` and the timelapse library alone — the library may be
+months of nights, and it lives wherever it was pointed rather than in the install directory.
 
 The build is unsigned, so Windows will warn about an unknown publisher.
 
@@ -67,7 +80,23 @@ dotnet build -c Release
 ```
 
 `.\publish.ps1` produces a shareable self-contained drop in `dist\` — one executable, ffmpeg
-beside it, and the third-party licence notices.
+beside it, and the third-party licence notices. Add `-Installer` to build the setup executable
+too, which needs [Inno Setup](https://jrsoftware.org/isinfo.php) (it installs per-user, so no
+administrator rights are required for that either).
+
+`ffmpeg.exe` is not in the repository; see [tools/README.md](tools/README.md) for what to put
+there.
+
+### Releases
+
+Pushing a tag such as `v1.1` runs [.github/workflows/build.yml](.github/workflows/build.yml),
+which builds both the installer and the zip on a Windows runner and attaches them to a GitHub
+Release. The same workflow can be run by hand from the Actions tab for a scratch build.
+
+It is deliberately not triggered on every push: Windows runners bill at 2× against the free
+plan's monthly allowance for private repositories, so building on each commit would exhaust it
+quickly. Public repositories get unlimited standard-runner minutes, at which point a `push:`
+trigger is free to add.
 
 ## Recording
 
