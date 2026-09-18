@@ -1,0 +1,22 @@
+# Build output
+bin/
+obj/
+
+# Shareable drops built by publish.ps1 — a 250 MB exe has no business in git history.
+dist/
+
+# ffmpeg is a 98 MB third-party GPL binary, fetched rather than committed. GitHub refuses
+# anything over 100 MB anyway. See tools/README.md for where to get the build this expects.
+tools/*
+!tools/README.md
+
+# Visual Studio / Rider / VS Code local state
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/
+
+# Local settings and logs live in %AppData%\PierCam, never in the tree — but just in case
+settings.json
+crash.log

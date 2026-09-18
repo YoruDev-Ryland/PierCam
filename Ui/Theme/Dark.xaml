@@ -1,0 +1,84 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!-- ══════════════════════════════════════════════════════════════════════════
+         THEME: DARK  (default)
+
+         This file is the whole contract a theme has to satisfy. Copy it, change the
+         values, drop it in Ui/Theme/, and register it in ThemeManager.Themes — no
+         other file needs to know the theme exists.
+
+         Every key below MUST be present in every theme. Controls.xaml refers to all
+         of them with DynamicResource, so a missing key shows up as an invisible
+         control rather than an exception.
+         ══════════════════════════════════════════════════════════════════════════ -->
+
+    <sys:String x:Key="ThemeName">Dark</sys:String>
+    <sys:String x:Key="ThemeBlurb">Near-black, cool panels, orange signal</sys:String>
+
+    <!-- Set true on light themes so decorative overlays (scanlines, vignette, glass
+         highlight) can flip from additive white to subtractive black. -->
+    <sys:Boolean x:Key="ThemeIsLight">False</sys:Boolean>
+
+    <!-- ── Surfaces ─────────────────────────────────────────────────────────── -->
+    <Color x:Key="BgDeepColor">#FF05070A</Color>
+    <Color x:Key="BgColor">#FF0A0D11</Color>
+    <Color x:Key="PanelColor">#FF141920</Color>
+    <Color x:Key="PanelRaisedColor">#FF1C232C</Color>
+
+    <SolidColorBrush x:Key="BgDeep" Color="{StaticResource BgDeepColor}"/>
+    <SolidColorBrush x:Key="Bg" Color="{StaticResource BgColor}"/>
+    <SolidColorBrush x:Key="Panel" Color="{StaticResource PanelColor}"/>
+    <SolidColorBrush x:Key="PanelRaised" Color="{StaticResource PanelRaisedColor}"/>
+
+    <!-- Translucent fills for panels that sit over the live image. Kept fairly
+         opaque so text stays readable against a bright moonlit sky. -->
+    <SolidColorBrush x:Key="Glass" Color="#FF141920" Opacity="0.72"/>
+    <SolidColorBrush x:Key="GlassDeep" Color="#FF0A0D11" Opacity="0.86"/>
+    <SolidColorBrush x:Key="Scrim" Color="#FF000000" Opacity="0.55"/>
+
+    <!-- ── Lines ────────────────────────────────────────────────────────────── -->
+    <SolidColorBrush x:Key="Hairline" Color="#FF2B333D"/>
+    <SolidColorBrush x:Key="HairlineSoft" Color="#FF1B222A"/>
+    <SolidColorBrush x:Key="HairlineStrong" Color="#FF3E4A57"/>
+    <SolidColorBrush x:Key="Grid" Color="#FF171D24"/>
+
+    <!-- ── Type ─────────────────────────────────────────────────────────────── -->
+    <SolidColorBrush x:Key="Text" Color="#FFEDF1F5"/>
+    <SolidColorBrush x:Key="TextDim" Color="#FF8B969F"/>
+    <SolidColorBrush x:Key="TextFaint" Color="#FF56616B"/>
+    <SolidColorBrush x:Key="TextInverse" Color="#FF05070A"/>
+
+    <!-- ── Signal colours ───────────────────────────────────────────────────── -->
+    <Color x:Key="AccentColor">#FFFF5A1F</Color>
+    <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="AccentSoft" Color="#40FF5A1F"/>
+    <SolidColorBrush x:Key="OnAccent" Color="#FF0A0D11"/>
+
+    <SolidColorBrush x:Key="Signal" Color="#FF35E07A"/>
+    <SolidColorBrush x:Key="SignalSoft" Color="#3335E07A"/>
+    <SolidColorBrush x:Key="Warn" Color="#FFFFB020"/>
+    <SolidColorBrush x:Key="Danger" Color="#FFFF4433"/>
+
+    <!-- ── Filled buttons ───────────────────────────────────────────────────────
+         Both fills are bright, so both are lettered in near-black. White on this
+         red only reaches about 3.4:1, which is under the readable floor even for
+         bold type; near-black on it reaches 5.7:1. -->
+    <SolidColorBrush x:Key="PrimaryFill" Color="#FFFF5A1F"/>
+    <SolidColorBrush x:Key="OnPrimary" Color="#FF0A0D11"/>
+    <SolidColorBrush x:Key="DangerFill" Color="#FFFF4433"/>
+    <SolidColorBrush x:Key="OnDanger" Color="#FF0A0D11"/>
+
+    <!-- ── Geometry & effect constants ──────────────────────────────────────── -->
+    <sys:Double x:Key="Chamfer">12</sys:Double>
+    <sys:Double x:Key="ChamferSmall">7</sys:Double>
+    <sys:Double x:Key="Hairline1">1</sys:Double>
+    <sys:Double x:Key="NoiseOpacity">0.055</sys:Double>
+    <sys:Double x:Key="VignetteOpacity">0.55</sys:Double>
+
+    <!-- ── Type ramp ────────────────────────────────────────────────────────── -->
+    <FontFamily x:Key="FontMono">Cascadia Mono, Consolas, Courier New</FontFamily>
+    <FontFamily x:Key="FontDisplay">Segoe UI Variable Display, Segoe UI, Arial</FontFamily>
+
+</ResourceDictionary>

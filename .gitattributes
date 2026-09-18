@@ -1,0 +1,16 @@
+# Normalise line endings so the history does not depend on who checked the tree out.
+* text=auto eol=crlf
+
+# Binary — never touch these.
+*.ico binary
+*.png binary
+*.jpg binary
+*.exe binary
+*.dll binary
+*.mp4 binary
+
+# The licence is carried verbatim from gnu.org; leave it exactly as published.
+LICENSE -text
+
+# Keep generated and vendored files out of language statistics and diffs.
+tools/** linguist-vendored

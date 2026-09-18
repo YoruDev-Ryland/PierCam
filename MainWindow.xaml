@@ -1,0 +1,1621 @@
+<Window x:Class="PierCam.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:c="clr-namespace:PierCam.Ui.Controls"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="PierCam" Height="940" Width="1560" MinHeight="480" MinWidth="640"
+        Background="{DynamicResource Bg}"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
+
+    <!-- The window paints its own caption. WindowChrome removes the system title bar while
+         leaving the system's resize, snap and drag behaviour alone, so this is a restyle and
+         not a reimplementation: dragging the header, double-clicking it, dragging to an edge to
+         snap and the Win+Arrow shortcuts all still go through Windows. CaptionHeight is set from
+         the real header height once it has measured — see OnWindowLoaded. -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome x:Name="Chrome" CaptionHeight="64" ResizeBorderThickness="6"
+                            CornerRadius="0" GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <!-- One card definition, used by both the grid and the carousel. Keeping a single
+             template means the two views can never drift apart. Event handlers resolve
+             against this window, which is why it lives here rather than in a theme file. -->
+        <DataTemplate x:Key="NightCard">
+            <c:ChamferPanel x:Name="card" Width="470" Height="440"
+                            Style="{StaticResource GlassPanel}"
+                            Padding="0" ClipContent="True" Corners="Diagonal">
+                <StackPanel>
+                    <Grid Height="244" Background="#FF000000">
+                        <Image Source="{Binding Poster}" Stretch="UniformToFill"/>
+
+                        <c:RegistrationMarks Stroke="#FFFFFFFF" Arm="14" Gap="9" Opacity="0.30"
+                                             ShowOuterTicks="False"/>
+
+                        <TextBlock Text="NO PREVIEW" Foreground="{DynamicResource TextFaint}"
+                                   FontSize="10" FontWeight="Bold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Poster}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+
+                        <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12"
+                                Background="#B0000000" Padding="8,4">
+                            <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" Content="SEL"
+                                      Style="{StaticResource OnImageCheck}"
+                                      FontSize="10" Margin="0" VerticalAlignment="Center"/>
+                        </Border>
+
+                        <TextBlock Text="{Binding IndexLabel}" HorizontalAlignment="Right"
+                                   VerticalAlignment="Top" Margin="14,13,14,0"
+                                   Foreground="#FFFFFFFF" Opacity="0.55"
+                                   FontSize="10" FontWeight="Bold"/>
+                    </Grid>
+
+                    <Rectangle Height="1" Fill="{DynamicResource Hairline}"/>
+
+                    <StackPanel Margin="18,14,18,16">
+                        <TextBlock Text="{Binding Title}" Style="{StaticResource Readout}"
+                                   FontSize="14" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding DateLine}" Style="{StaticResource Label}"
+                                   Foreground="{DynamicResource TextFaint}" Margin="0,5,0,0"/>
+
+                        <Rectangle Style="{StaticResource Divider}"/>
+
+                        <TextBlock Text="{Binding Summary}" FontSize="11" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextDim}"/>
+                        <TextBlock Text="{Binding TechLine}" Style="{StaticResource Label}"
+                                   Foreground="{DynamicResource TextFaint}" Margin="0,5,0,0"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding SizeLine}" Foreground="{DynamicResource Signal}"
+                                   FontSize="11" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding StatusLine}" Foreground="{DynamicResource Danger}"
+                                   FontSize="11" Margin="0,5,0,0" TextWrapping="Wrap"
+                                   Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <Button Content="▶ PLAY" Click="OnPlayTimelapse" Tag="{Binding}"
+                                    Style="{StaticResource BtnPrimary}"/>
+                            <Button Content="FOLDER" Margin="6,0,0,0" Click="OnOpenItemFolder"
+                                    Tag="{Binding}"/>
+                            <Button Content="RENAME" Margin="6,0,0,0" Click="OnRenameItem"
+                                    Tag="{Binding}"/>
+                            <Button Content="DEL" Margin="6,0,0,0" Style="{StaticResource BtnGhost}"
+                                    Click="OnDeleteItem" Tag="{Binding}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+            </c:ChamferPanel>
+        </DataTemplate>
+        <!-- The card the library wears while the player is open. Not the full card shrunk —
+             a scaled-down card is unreadable, and the point of getting out of the player's way
+             is undermined by keeping detail nobody can read. This keeps what identifies a night
+             and what you would click, and drops the rest: no selection box, no frame counts, no
+             encoder line, no poster. Short enough that the player gets nearly all the height. -->
+        <DataTemplate x:Key="NightCardCompact">
+            <c:ChamferPanel Style="{StaticResource GlassPanel}" Corners="Diagonal" Padding="10"
+                            Width="440" Height="92" ClipContent="True">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Same poster as the full card, at strip size: it identifies a night faster
+                         than the title does, which is most of what this card is for. -->
+                    <c:ChamferPanel Grid.Column="0" Width="106" Height="60" Padding="0"
+                                    Background="#FF000000" Stroke="{DynamicResource HairlineSoft}"
+                                    Chamfer="{DynamicResource ChamferSmall}" Corners="Diagonal"
+                                    ClipContent="True" Margin="0,0,11,0" VerticalAlignment="Center">
+                        <Image Source="{Binding Poster}" Stretch="UniformToFill"/>
+                    </c:ChamferPanel>
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="{Binding Title}" Style="{StaticResource Readout}"
+                                   FontSize="12" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding DateLine}" Style="{StaticResource Label}"
+                                   Foreground="{DynamicResource TextFaint}" Margin="0,4,0,0"/>
+                        <TextBlock Text="{Binding PlayLine}" Style="{StaticResource Label}"
+                                   Foreground="{DynamicResource Signal}" Margin="0,3,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="2" Content="▶ PLAY" VerticalAlignment="Center"
+                            Style="{StaticResource BtnPrimary}" Padding="12,7"
+                            Click="OnPlayTimelapse" Tag="{Binding}"/>
+                </Grid>
+            </c:ChamferPanel>
+        </DataTemplate>
+
+        <!-- Every item carries both bodies at once, stacked in the same box, and the window's
+             blend values cross-dissolve them. One animated number moves all fourteen cards, and
+             the box they share animates its size underneath, so the card is seen to change shape
+             rather than being swapped for a different one. -->
+        <DataTemplate x:Key="NightCardBoth">
+            <!-- Each body keeps its own natural size and is scaled to fit the animated box by a
+                 Viewbox. That is what makes this a transform rather than a clip: as the box
+                 travels the detailed card genuinely shrinks — poster, rules, type and all — into
+                 the space the compact one is arriving in, instead of being cut off at the edge. -->
+            <Grid Width="{Binding CardBoxWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                  Height="{Binding CardBoxHeight, RelativeSource={RelativeSource AncestorType=Window}}">
+                <Viewbox Stretch="Uniform" StretchDirection="DownOnly"
+                         Opacity="{Binding FullBlend, RelativeSource={RelativeSource AncestorType=Window}}"
+                         IsHitTestVisible="{Binding FullActive, RelativeSource={RelativeSource AncestorType=Window}}">
+                    <ContentPresenter ContentTemplate="{StaticResource NightCard}" Content="{Binding}"/>
+                </Viewbox>
+                <Viewbox Stretch="Uniform" StretchDirection="DownOnly"
+                         Opacity="{Binding CompactBlend, RelativeSource={RelativeSource AncestorType=Window}}"
+                         IsHitTestVisible="{Binding CompactActive, RelativeSource={RelativeSource AncestorType=Window}}">
+                    <ContentPresenter ContentTemplate="{StaticResource NightCardCompact}" Content="{Binding}"/>
+                </Viewbox>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="FlowItem">
+            <ContentControl ContentTemplate="{StaticResource NightCardBoth}" Content="{Binding}"/>
+        </DataTemplate>
+        <DataTemplate x:Key="GridItem">
+            <ContentControl ContentTemplate="{StaticResource NightCardBoth}" Content="{Binding}"
+                            Margin="0,0,14,14"/>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ══════════════════ HEADER ══════════════════ -->
+        <Grid x:Name="HeaderBar" Grid.Row="0" Margin="16,14,16,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Wordmark + nav: two plates that mate along a 45° seam, the same joint the config
+                 page uses. The wordmark plate's bottom-right corner is cut away and the nav plate
+                 overlaps it by exactly that much with a matching jog on its left edge, so the nav
+                 plate's tab fills the cut and the pair reads as one machined part.
+                 Everything interactive in the caption strip has to opt out of being caption,
+                 or Windows swallows the click as the start of a window drag. -->
+            <Grid x:Name="HeaderNav" Grid.Column="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Wordmark. A raised plate, so the mark sits on a darker tile than the tabs.
+                     Clicking it opens the about box. The plate already opts out of being caption
+                     for the tabs' sake, so it was never a drag handle and nothing is lost. -->
+                <c:ChamferPanel x:Name="WordmarkPlate" Grid.Column="0" Style="{StaticResource PlateAccent}"
+                                Cuts="18,0,34,0" Padding="0" Panel.ZIndex="1"
+                                shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <!-- A real Button, not a click handler on the plate: inside the caption strip
+                         only proper controls reliably take the mouse, and it brings the hand
+                         cursor, the tooltip and keyboard access with it. The template is bare so
+                         the plate stays the only thing you can see. -->
+                    <Button x:Name="WordmarkButton" Click="OnAbout" Cursor="Hand"
+                            Padding="18,7,30,7" ToolTip="About PierCam"
+                            AutomationProperties.Name="About PierCam"
+                            c:LayoutCheck.Ignore="True">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                                    <ContentPresenter/>
+                                </Border>
+                            </ControlTemplate>
+                        </Button.Template>
+                    <Grid VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <!-- The slant tag heads every plate in the app; here it is the mark itself. -->
+                        <c:SlantTag x:Name="WordmarkTag" Grid.Column="0" Grid.RowSpan="2" Width="18" Height="26" Slant="7"
+                                    VerticalAlignment="Center" Margin="0,0,11,0"/>
+                        <TextBlock x:Name="WordmarkText" Grid.Column="1" Grid.Row="0" Text="PIERCAM"
+                                   Style="{StaticResource Display}" FontSize="17" Margin="0,-3,0,0"/>
+                        <StackPanel x:Name="WordmarkSub" Grid.Column="1" Grid.Row="1" Orientation="Horizontal" Margin="0,1,0,0">
+                            <TextBlock Style="{StaticResource Label}" Text="ALL-SKY"/>
+                            <TextBlock Style="{StaticResource Label}" Text="·" Margin="5,0"/>
+                            <TextBlock x:Name="WordmarkCode" Style="{StaticResource Label}" Text="V1.0"/>
+                            <c:BarCode Width="26" Height="8" Bars="7" Seed="3" Margin="9,0,0,0"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+                    </Button>
+                </c:ChamferPanel>
+
+                <!-- Tabs. Overlaps the wordmark by the width of its cut plus one pixel; the jog on
+                     the left edge is pushed to the far end so it lands on the wordmark's diagonal.
+                     The extra pixel is the stroke: each plate draws its line a half-pixel inside
+                     its own outline, so with an exact overlap the two lines sit side by side and
+                     the shared vertical reads as a 2px bar. -->
+                <c:ChamferPanel x:Name="NavPlate" Grid.Column="1" Style="{StaticResource GlassPanel}"
+                                Cuts="0,0,18,0" LeftEdge="34>0@9999" Margin="-35,0,0,0" Padding="43,0,12,0"
+                                shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <!-- Two forms. NavTabs lives here at full width; when the header runs out of
+                         room FitHeader moves it into NavPopup and shows the menu button instead,
+                         so the same three RadioButtons are the tab bar and the menu. -->
+                    <Grid x:Name="NavHost" VerticalAlignment="Center">
+                        <StackPanel x:Name="NavTabs" Orientation="Horizontal" VerticalAlignment="Center">
+                            <RadioButton x:Name="NavLive" GroupName="nav" Style="{StaticResource NavItem}"
+                                         Content="LIVE" Tag="0" Checked="OnNavChanged" c:Nav.Code="01"/>
+                            <RadioButton x:Name="NavLibrary" GroupName="nav" Style="{StaticResource NavItem}"
+                                         Content="LIBRARY" Tag="1" Checked="OnNavChanged" c:Nav.Code="02"/>
+                            <RadioButton x:Name="NavConfig" GroupName="nav" Style="{StaticResource NavItem}"
+                                         Content="CONFIG" Tag="2" Checked="OnNavChanged" c:Nav.Code="03"/>
+                        </StackPanel>
+                        <ToggleButton x:Name="NavMenuButton" Style="{StaticResource MenuToggle}"
+                                      Visibility="Collapsed" ToolTip="Page"
+                                      AutomationProperties.Name="Page">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock x:Name="NavMenuLabel" Text="01 LIVE"/>
+                                <Path Style="{StaticResource Chevron}"/>
+                            </StackPanel>
+                        </ToggleButton>
+                        <Popup x:Name="NavPopup" PlacementTarget="{Binding ElementName=NavPlate}"
+                               Placement="Bottom" VerticalOffset="6" StaysOpen="False"
+                               AllowsTransparency="True" PopupAnimation="None">
+                            <c:ChamferPanel x:Name="NavPopupPlate" Style="{StaticResource MenuPlate}">
+                                <StackPanel x:Name="NavPopupHost" MinWidth="170"/>
+                            </c:ChamferPanel>
+                        </Popup>
+                    </Grid>
+                </c:ChamferPanel>
+            </Grid>
+
+            <!-- Centre: technical strip. Decorative, but it carries the live clock. First thing
+                 to go when the header is short of room. -->
+            <StackPanel x:Name="HeaderCentre" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center"
+                        VerticalAlignment="Center" Opacity="0.9">
+                <c:TickRule Width="88" Height="13" Stroke="{DynamicResource Hairline}"
+                            Spacing="6" MajorEvery="4" VerticalAlignment="Center"/>
+                <TextBlock x:Name="HeaderClock" Style="{StaticResource Label}" Margin="14,0"
+                           VerticalAlignment="Center" Text="--:--:--"/>
+                <c:TickRule Width="88" Height="13" Stroke="{DynamicResource Hairline}"
+                            Spacing="6" MajorEvery="4" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- Camera + theme. Same arrangement as the tabs: CameraRow is in the plate at full
+                 width and moves into CameraPopup behind a menu button when the header is narrow.
+                 The link LED stays in the plate either way — it is the one thing worth a glance
+                 without opening anything. -->
+            <c:ChamferPanel x:Name="CameraPlate" Grid.Column="2" Style="{StaticResource GlassPanel}" Corners="Diagonal"
+                            Padding="14,9" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse x:Name="LinkLed" Width="7" Height="7" Fill="{DynamicResource TextFaint}"
+                             VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <Grid x:Name="CameraHost" VerticalAlignment="Center">
+                        <StackPanel x:Name="CameraRow" Orientation="Horizontal" VerticalAlignment="Center">
+                            <ComboBox x:Name="CameraCombo" Width="215" VerticalAlignment="Center"/>
+                            <Button x:Name="RescanButton" Content="SCAN" Margin="7,0,0,0" Click="OnRescan"/>
+                            <Button x:Name="ConnectButton" Content="CONNECT" Margin="7,0,0,0"
+                                    Style="{StaticResource BtnPrimary}" Click="OnConnectToggle"/>
+                            <Rectangle Width="1" Fill="{DynamicResource Hairline}" Margin="12,2"/>
+                            <ComboBox x:Name="ThemeCombo" Width="118" VerticalAlignment="Center"
+                                      SelectionChanged="OnThemeChanged" ToolTip="Interface palette"/>
+                        </StackPanel>
+                        <ToggleButton x:Name="CameraMenuButton" Style="{StaticResource MenuToggle}"
+                                      Visibility="Collapsed" ToolTip="Camera and theme"
+                                      AutomationProperties.Name="Camera and theme">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="CAMERA"/>
+                                <Path Style="{StaticResource Chevron}"/>
+                            </StackPanel>
+                        </ToggleButton>
+                        <!-- Hangs off the window-controls plate, not this one: the row is ~560px
+                             and right-aligning it to the last plate on the row is what keeps it
+                             inside a 640px window. -->
+                        <Popup x:Name="CameraPopup" PlacementTarget="{Binding ElementName=WindowPlate}"
+                               Placement="Custom" StaysOpen="False"
+                               AllowsTransparency="True" PopupAnimation="None">
+                            <c:ChamferPanel x:Name="CameraPopupPlate" Style="{StaticResource MenuPlate}">
+                                <Grid x:Name="CameraPopupHost"/>
+                            </c:ChamferPanel>
+                        </Popup>
+                    </Grid>
+                </StackPanel>
+            </c:ChamferPanel>
+
+            <!-- Window controls. Their own plate rather than three glyphs floating in the corner,
+                 so they belong to the same assembly as everything else on this row. -->
+            <c:ChamferPanel x:Name="WindowPlate" Grid.Column="3" Style="{StaticResource GlassPanel}" Corners="Diagonal"
+                            Padding="5,4" Margin="10,0,0,0"
+                            shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource WinBtn}" Click="OnMinimiseWindow" ToolTip="Minimise">
+                        <Path Data="M0,5.5 H11" StrokeThickness="1"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    </Button>
+                    <Button x:Name="MaximiseButton" Style="{StaticResource WinBtn}"
+                            Click="OnMaximiseWindow" ToolTip="Maximise">
+                        <Path x:Name="MaxGlyph" Data="M0.5,0.5 H10.5 V10.5 H0.5 Z" StrokeThickness="1"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    </Button>
+                    <Button Style="{StaticResource WinBtnClose}" Click="OnCloseWindow" ToolTip="Close">
+                        <Path Data="M0.5,0.5 L10.5,10.5 M10.5,0.5 L0.5,10.5" StrokeThickness="1"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    </Button>
+                </StackPanel>
+            </c:ChamferPanel>
+        </Grid>
+
+        <!-- ══════════════════ BODY ══════════════════ -->
+        <Grid Grid.Row="1" Margin="16,14,16,0">
+
+            <!-- ─────────── LIVE ─────────── -->
+            <Grid x:Name="LivePage">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="382"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Viewport -->
+                <c:ChamferPanel x:Name="ViewportPanel" Grid.Column="0" Padding="0"
+                                Background="#FF000000" Stroke="{DynamicResource Hairline}"
+                                Corners="Diagonal" ClipContent="True">
+                    <Grid>
+                        <Image x:Name="PreviewImage" Stretch="Uniform"
+                               RenderOptions.BitmapScalingMode="LowQuality"/>
+
+                        <!-- Frame decorations. Marks only — nothing moves or washes across the
+                             image, so what you see is exactly the frame the camera returned. -->
+                        <Grid x:Name="ViewportChrome" IsHitTestVisible="False">
+                            <c:RegistrationMarks Stroke="#FFFFFFFF" Arm="24" Gap="14" Opacity="0.5"/>
+
+                            <c:BarCode Width="70" Height="14" Margin="0,0,30,28" Seed="41" Bars="16"
+                                       HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                       Fill="#FFFFFFFF" Opacity="0.35"/>
+
+                            <c:HazardStripes Width="86" Height="9" Margin="30,0,0,28"
+                                             HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                             StripeBrush="#FFFFFFFF" Opacity="0.28"
+                                             StripeWidth="2" StripeGap="5"/>
+                        </Grid>
+
+                        <!-- Corner telemetry -->
+                        <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top"
+                                    Margin="30,28,0,0" IsHitTestVisible="False">
+                            <TextBlock x:Name="VpSensor" Style="{StaticResource Label}"
+                                       Foreground="{DynamicResource TextDim}" Text="SENSOR ---"/>
+                            <TextBlock x:Name="VpFormat" Style="{StaticResource Label}"
+                                       Foreground="{DynamicResource TextFaint}" Margin="0,3,0,0"
+                                       Text="---- × ----  RAW16"/>
+                        </StackPanel>
+
+                        <Border x:Name="RecBadge" HorizontalAlignment="Right" VerticalAlignment="Top"
+                                Margin="0,26,30,0" Visibility="Collapsed" IsHitTestVisible="False">
+                            <StackPanel Orientation="Horizontal">
+                                <Rectangle x:Name="RecDot" Width="9" Height="9" Fill="{DynamicResource Danger}"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock x:Name="RecBadgeText" Text="REC" Margin="9,0,0,0"
+                                           Style="{StaticResource Label}" FontSize="11"
+                                           Foreground="{DynamicResource Danger}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock x:Name="PreviewPlaceholder" Text="NO SIGNAL"
+                                   Foreground="{DynamicResource TextFaint}" FontSize="13"
+                                   FontWeight="Bold" HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+
+                        <!-- A blown-out frame renders as featureless grey, which looks like a
+                             broken camera. Say what is actually happening instead. -->
+                        <c:ChamferPanel x:Name="ExposureWarning" Visibility="Collapsed"
+                                        HorizontalAlignment="Center" VerticalAlignment="Center"
+                                        Background="{DynamicResource GlassDeep}"
+                                        Stroke="{DynamicResource Warn}" StrokeThickness="1"
+                                        Corners="Diagonal" Padding="20,14" IsHitTestVisible="False">
+                            <StackPanel>
+                                <TextBlock x:Name="ExposureWarningTitle" Style="{StaticResource Readout}"
+                                           Foreground="{DynamicResource Warn}"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock x:Name="ExposureWarningBody" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextDim}" Margin="0,7,0,0"
+                                           HorizontalAlignment="Center" TextAlignment="Center"/>
+                            </StackPanel>
+                        </c:ChamferPanel>
+                    </Grid>
+                </c:ChamferPanel>
+
+                <!-- Control column -->
+                <ScrollViewer Grid.Column="1" Margin="14,0,0,0" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="LiveStack">
+
+                        <!-- One assembly, the same way the config page is built: no gaps, and
+                             every seam that jogs is carried by both plates, so a cut in one is a
+                             tab on the next. Tabs alternate sides down the column and each one
+                             carries its own plate's index. Rise 36, flat 150, so a tab is just
+                             under half the plate wide. Proven by PIERCAM_LAYOUTCHECK=1. -->
+
+                        <!-- 01 · CAPTURE. Top of the assembly: outer corner cut. Its bottom-right
+                             is stepped up 36px for the last 150px, where SCHEDULE's tab rises. -->
+                        <c:ChamferPanel x:Name="CardCapture" Style="{StaticResource Plate}"
+                                        Cuts="0,30,0,0" BottomEdge="0>36@-150" Padding="18,16,18,0">
+                            <StackPanel>
+                                <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                    <HeaderedContentControl.Header>
+                                        <TextBlock Text="CAPTURE" Style="{StaticResource PlateTitle}"/>
+                                    </HeaderedContentControl.Header>
+                                    <TextBlock Text="01 / CAP" Style="{StaticResource Label}"
+                                               Foreground="{DynamicResource TextFaint}"/>
+                                </HeaderedContentControl>
+
+                                <TextBlock Text="NAME" Style="{StaticResource FieldLabel}"/>
+                                <TextBox x:Name="SessionTitleBox" Margin="0,0,0,12"/>
+
+                                <TextBlock Text="INTERVAL" Style="{StaticResource FieldLabel}"/>
+                                <ComboBox x:Name="IntervalCombo" Margin="0,0,0,10"
+                                          SelectionChanged="OnPlanChanged"/>
+
+                                <c:ChamferPanel Background="{DynamicResource BgDeep}"
+                                                Stroke="{DynamicResource HairlineSoft}"
+                                                Chamfer="{DynamicResource ChamferSmall}"
+                                                Corners="Diagonal" Padding="12,10" Margin="0,0,0,14">
+                                    <StackPanel>
+                                        <TextBlock x:Name="PlanFramesText" FontSize="11" TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="PlanSizeText" FontSize="11"
+                                                   Foreground="{DynamicResource TextDim}"
+                                                   TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                    </StackPanel>
+                                </c:ChamferPanel>
+
+                                <Button x:Name="RecordButton" Content="START RECORDING" Height="44"
+                                        FontSize="12" Style="{StaticResource BtnPrimary}"
+                                        Click="OnRecordToggle"/>
+
+                                <!-- Foot strip, kept to the left 160px: the right of this band is
+                                     where the plate steps up for SCHEDULE's tab. -->
+                                <Grid Height="64">
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left"
+                                                VerticalAlignment="Bottom" Margin="0,0,0,11">
+                                        <c:TickRule Width="96" Height="10" Spacing="6" MajorEvery="4"
+                                                    VerticalAlignment="Center"/>
+                                        <c:DataGrid Width="40" Height="12" Cell="4" Seed="13"
+                                                    Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </c:ChamferPanel>
+
+                        <!-- 02 · SCHEDULE. Drawn 36px up into CAPTURE; only the right 186px of
+                             that band is plate — the tab, mirroring CAPTURE's step. Its own
+                             bottom-left is stepped up in turn, for EXPOSURE's tab. -->
+                        <c:ChamferPanel x:Name="CardSchedule" Style="{StaticResource Plate}"
+                                        Margin="0,-36,0,0" TopEdge="36>0@-150" BottomEdge="36>0@150"
+                                        Padding="18,0,18,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="36"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <!-- Well taller than the 36px step it shares its bottom with, so the
+                                         step's edge runs a clear 28px under the last row of content
+                                         rather than right beneath it; the markings sit at the bottom
+                                         of the band, on the full-depth side. -->
+                                    <RowDefinition Height="64"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- The tab. -->
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" Margin="0,4,0,0">
+                                    <c:BarCode Width="36" Height="11" Bars="9" Seed="7"
+                                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                    <TextBlock Text="02 / SCH" Style="{StaticResource Label}"
+                                               Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="1" Margin="0,16,0,0">
+                                <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                    <HeaderedContentControl.Header>
+                                        <TextBlock Text="SCHEDULE" Style="{StaticResource PlateTitle}"/>
+                                    </HeaderedContentControl.Header>
+                                    <TextBlock Text="" Style="{StaticResource Label}"/>
+                                </HeaderedContentControl>
+                                <RadioButton x:Name="ScheduleManualRadio" Content="MANUAL ONLY"
+                                             GroupName="sched" Checked="OnScheduleModeChanged"/>
+                                <RadioButton x:Name="ScheduleAstroRadio" Content="DUSK TO DAWN (AUTOMATIC)"
+                                             GroupName="sched" Checked="OnScheduleModeChanged"/>
+                                <RadioButton x:Name="ScheduleNightlyRadio" Content="FIXED CLOCK TIMES"
+                                             GroupName="sched" Checked="OnScheduleModeChanged"/>
+
+                                <Grid x:Name="ScheduleAstroGrid" Margin="0,12,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="DARKNESS THRESHOLD" Style="{StaticResource FieldLabel}"/>
+                                        <ComboBox x:Name="TwilightCombo" SelectionChanged="OnTwilightChanged"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <Grid x:Name="ScheduleTimesGrid" Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="START" Style="{StaticResource FieldLabel}"/>
+                                        <TextBox x:Name="StartTimeBox" LostFocus="OnScheduleTimeChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="STOP" Style="{StaticResource FieldLabel}"/>
+                                        <TextBox x:Name="EndTimeBox" LostFocus="OnScheduleTimeChanged"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <TextBlock x:Name="ScheduleHint" Style="{StaticResource FieldLabel}"
+                                           Margin="0,10,0,0" TextWrapping="Wrap"/>
+
+                                <Rectangle Style="{StaticResource Divider}"/>
+
+                                <CheckBox x:Name="RoofGateCheck" Content="ONLY RECORD WHEN ROOF IS OPEN"
+                                          Checked="OnRoofGateChanged" Unchecked="OnRoofGateChanged"/>
+                                <DockPanel Margin="0,7,0,0">
+                                    <Ellipse x:Name="RoofLed" Width="7" Height="7"
+                                             Fill="{DynamicResource TextFaint}" VerticalAlignment="Center"
+                                             Margin="0,0,9,0" DockPanel.Dock="Left"/>
+                                    <TextBlock x:Name="RoofHint" Style="{StaticResource FieldLabel}"
+                                               Margin="0" TextWrapping="Wrap"/>
+                                </DockPanel>
+                                </StackPanel>
+
+                                <!-- Foot strip, kept to the right: the left of this band is where
+                                     the plate steps up for EXPOSURE's tab. -->
+                                <Grid Grid.Row="2">
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                                VerticalAlignment="Bottom" Margin="0,0,0,11">
+                                        <c:Connector Width="90" Height="14" Lead="0.4"
+                                                     Stroke="{DynamicResource HairlineSoft}"
+                                                     StartCap="Dot" EndCap="Tick" VerticalAlignment="Center"/>
+                                        <c:HazardStripes Width="40" Height="9" StripeWidth="2" StripeGap="4"
+                                                         Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Grid>
+                        </c:ChamferPanel>
+
+                        <!-- 03 · EXPOSURE. Tab on the left this time, rising into SCHEDULE's
+                             bottom-left step; its own bottom-right steps up for IMAGE's tab. -->
+                        <c:ChamferPanel x:Name="CardExposure" Style="{StaticResource Plate}"
+                                        Margin="0,-36,0,0" TopEdge="0>36@150" BottomEdge="0>36@-150"
+                                        Padding="18,0,18,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="36"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <!-- Well taller than the 36px step it shares its bottom with, so the
+                                         step's edge runs a clear 28px under the last row of content
+                                         rather than right beneath it; the markings sit at the bottom
+                                         of the band, on the full-depth side. -->
+                                    <RowDefinition Height="64"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Left"
+                                            VerticalAlignment="Center" Margin="0,4,0,0">
+                                    <TextBlock Text="03 / EXP" Style="{StaticResource Label}"
+                                               Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
+                                    <c:BarCode Width="36" Height="11" Bars="9" Seed="19"
+                                               VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="1" Margin="0,16,0,0">
+                                <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                    <HeaderedContentControl.Header>
+                                        <TextBlock Text="EXPOSURE" Style="{StaticResource PlateTitle}"/>
+                                    </HeaderedContentControl.Header>
+                                    <TextBlock Text="" Style="{StaticResource Label}"/>
+                                </HeaderedContentControl>
+
+                                <DockPanel Margin="0,0,0,3">
+                                    <TextBlock Text="SUB LENGTH" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="ExposureValue" Style="{StaticResource ValueEntry}"
+                                             Foreground="{DynamicResource Accent}"
+                                             HorizontalAlignment="Right" DockPanel.Dock="Right"/>
+                                </DockPanel>
+                                <Slider x:Name="ExposureSlider" Minimum="0.1" Maximum="120" SmallChange="0.1"
+                                        ValueChanged="OnExposureChanged" Margin="0,0,0,14"/>
+
+                                <DockPanel Margin="0,0,0,3">
+                                    <TextBlock Text="GAIN" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="GainValue" Style="{StaticResource ValueEntry}"
+                                             Foreground="{DynamicResource Accent}"
+                                             HorizontalAlignment="Right" DockPanel.Dock="Right"/>
+                                </DockPanel>
+                                <Slider x:Name="GainSlider" Minimum="0" Maximum="600" IsSnapToTickEnabled="True"
+                                        TickFrequency="1" ValueChanged="OnGainChanged" Margin="0,0,0,12"/>
+
+                                <Rectangle Style="{StaticResource Divider}"/>
+
+                                <CheckBox x:Name="AutoExposureCheck" Checked="OnAutoExposureChanged" Unchecked="OnAutoExposureChanged"
+                                          Content="TWILIGHT RAMP"/>
+                                <TextBlock x:Name="AutoExposureHint" Style="{StaticResource FieldLabel}"
+                                           TextWrapping="Wrap" Margin="0,3,0,12"/>
+
+                                <Rectangle Style="{StaticResource Divider}"/>
+
+                                <TextBlock Text="LIVE VIEW ONLY — DOES NOT AFFECT RECORDINGS"
+                                           Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextFaint}" Margin="0,0,0,6"/>
+
+                                <CheckBox x:Name="PreviewAutoCheck" Checked="OnPreviewAutoChanged" Unchecked="OnPreviewAutoChanged"
+                                          Content="AUTO EXPOSE LIVE VIEW"/>
+                                <TextBlock x:Name="PreviewAutoHint" Style="{StaticResource FieldLabel}"
+                                           TextWrapping="Wrap" Margin="0,3,0,10"/>
+
+                                <Grid x:Name="PreviewManualGrid">
+                                    <StackPanel>
+                                        <DockPanel Margin="0,0,0,3">
+                                            <TextBlock Text="PREVIEW SUB" Style="{StaticResource FieldLabel}"/>
+                                            <TextBox x:Name="PreviewExposureValue"
+                                                     Style="{StaticResource ValueEntry}"
+                                                     Foreground="{DynamicResource TextDim}"
+                                                     HorizontalAlignment="Right" DockPanel.Dock="Right"/>
+                                        </DockPanel>
+                                        <Slider x:Name="PreviewExposureSlider" Minimum="0.001" Maximum="30"
+                                                SmallChange="0.01" ValueChanged="OnPreviewExposureChanged"
+                                                Margin="0,0,0,12"/>
+
+                                        <DockPanel Margin="0,0,0,3">
+                                            <TextBlock Text="PREVIEW GAIN" Style="{StaticResource FieldLabel}"/>
+                                            <TextBox x:Name="PreviewGainValue" Style="{StaticResource ValueEntry}"
+                                                     Foreground="{DynamicResource TextDim}"
+                                                     HorizontalAlignment="Right" DockPanel.Dock="Right"/>
+                                        </DockPanel>
+                                        <Slider x:Name="PreviewGainSlider" Minimum="0" Maximum="600"
+                                                IsSnapToTickEnabled="True" TickFrequency="1"
+                                                ValueChanged="OnPreviewGainChanged"/>
+                                    </StackPanel>
+                                </Grid>
+                                </StackPanel>
+
+                                <!-- Foot strip, kept left: the right of this band steps up for IMAGE. -->
+                                <Grid Grid.Row="2">
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left"
+                                                VerticalAlignment="Bottom" Margin="0,0,0,11">
+                                        <c:DataGrid Width="40" Height="12" Cell="4" Seed="29"
+                                                    VerticalAlignment="Center"/>
+                                        <c:TickRule Width="96" Height="10" Spacing="6" MajorEvery="4"
+                                                    Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Grid>
+                        </c:ChamferPanel>
+
+                        <!-- 04 · IMAGE. Foot of the assembly: tab on the right into EXPOSURE, and
+                             the bottom-left corner cut to close the column. -->
+                        <c:ChamferPanel x:Name="CardImage" Style="{StaticResource Plate}"
+                                        Margin="0,-36,0,14" TopEdge="36>0@-150" Cuts="0,0,0,30"
+                                        Padding="18,0,18,16">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="36"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" Margin="0,4,0,0">
+                                    <c:BarCode Width="36" Height="11" Bars="9" Seed="31"
+                                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                    <TextBlock Text="04 / IMG" Style="{StaticResource Label}"
+                                               Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="1" Margin="0,16,0,0">
+                                <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                    <HeaderedContentControl.Header>
+                                        <TextBlock Text="IMAGE" Style="{StaticResource PlateTitle}"/>
+                                    </HeaderedContentControl.Header>
+                                    <TextBlock Text="" Style="{StaticResource Label}"/>
+                                </HeaderedContentControl>
+                                <ComboBox x:Name="StretchModeCombo" Margin="0,0,0,14"
+                                          SelectionChanged="OnStretchModeChanged"/>
+
+                                <DockPanel Margin="0,0,0,3">
+                                    <TextBlock Text="SKY LEVEL" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="TargetBgValue" Style="{StaticResource ValueEntry}"
+                                             Foreground="{DynamicResource Accent}"
+                                             HorizontalAlignment="Right" DockPanel.Dock="Right"/>
+                                </DockPanel>
+                                <Slider x:Name="TargetBgSlider" Minimum="0.05" Maximum="0.6"
+                                        ValueChanged="OnTargetBgChanged" Margin="0,0,0,10"/>
+
+                                <CheckBox x:Name="NeutraliseCheck" Content="NEUTRALISE LP COLOUR"
+                                          Checked="OnNeutraliseChanged" Unchecked="OnNeutraliseChanged"/>
+                                <CheckBox x:Name="TimestampCheck" Content="BURN TIMESTAMP"
+                                          Checked="OnTimestampChanged" Unchecked="OnTimestampChanged"/>
+
+                                <!-- Closing marks. The corner cut below-left is only 30px, so this
+                                     sits clear of it on the padding alone. -->
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <c:Connector Grid.Column="0" Height="14" Margin="14,0,16,0" Lead="0.55"
+                                                 Rise="True" Stroke="{DynamicResource HairlineSoft}"
+                                                 StartCap="Ring" EndCap="Square" VerticalAlignment="Bottom"/>
+                                    <c:BarCode Grid.Column="1" Width="44" Height="12" Bars="11" Seed="37"
+                                               VerticalAlignment="Bottom"/>
+                                </Grid>
+                                </StackPanel>
+                            </Grid>
+                        </c:ChamferPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <!-- ─────────── LIBRARY ─────────── -->
+            <Grid x:Name="LibraryPage" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0">
+                    <c:ChamferPanel Style="{StaticResource GlassPanel}" Padding="16,11" Margin="0,0,0,10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                <TextBlock x:Name="LibraryCountText" Style="{StaticResource Readout}"/>
+                                <TextBlock x:Name="LibrarySavingsText" Style="{StaticResource FieldLabel}"
+                                           Margin="0,3,0,0"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <!-- View toggle -->
+                                <c:ChamferPanel Background="{DynamicResource BgDeep}"
+                                                Stroke="{DynamicResource HairlineSoft}"
+                                                Chamfer="{DynamicResource ChamferSmall}"
+                                                Corners="Diagonal" Padding="3" Margin="0,0,10,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton x:Name="ViewCarouselRadio" GroupName="libview"
+                                                     Style="{StaticResource Segment}" Content="CAROUSEL"
+                                                     Checked="OnLibraryViewChanged"/>
+                                        <RadioButton x:Name="ViewGridRadio" GroupName="libview"
+                                                     Style="{StaticResource Segment}" Content="GRID"
+                                                     Checked="OnLibraryViewChanged"/>
+                                    </StackPanel>
+                                </c:ChamferPanel>
+                                <Button Content="SELECT ALL" Click="OnSelectAll"/>
+                                <Button Content="FOLDER" Margin="7,0,0,0" Click="OnOpenLibraryFolder"/>
+                                <Button Content="REFRESH" Margin="7,0,0,0" Click="OnRefreshLibrary"/>
+                            </StackPanel>
+                        </Grid>
+                    </c:ChamferPanel>
+
+                    <c:ChamferPanel x:Name="BatchBar" Style="{StaticResource GlassPanel}" Padding="16,11"
+                                    Margin="0,0,0,10" Visibility="Collapsed"
+                                    Stroke="{DynamicResource Accent}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                <TextBlock x:Name="SelectionCountText" Style="{StaticResource Readout}"/>
+                                <TextBlock x:Name="SelectionEstimateText"
+                                           Style="{StaticResource FieldLabel}" Margin="0,3,0,0"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="DOWNSCALE TO" Style="{StaticResource FieldLabel}"
+                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <ComboBox x:Name="DownscaleCombo" Width="250"
+                                          IsSynchronizedWithCurrentItem="False"
+                                          SelectionChanged="OnDownscaleTargetChanged"/>
+                                <Button x:Name="DownscaleButton" Content="RUN" Margin="7,0,0,0"
+                                        Style="{StaticResource BtnPrimary}" Click="OnDownscaleSelected"/>
+                                <Button Content="CLEAR" Margin="7,0,0,0"
+                                        Style="{StaticResource BtnGhost}" Click="OnClearSelection"/>
+                            </StackPanel>
+                        </Grid>
+                    </c:ChamferPanel>
+
+                    <c:ChamferPanel x:Name="BatchProgressBar" Style="{StaticResource GlassPanel}"
+                                    Padding="16,11" Margin="0,0,0,10" Visibility="Collapsed">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                <TextBlock x:Name="BatchStatusText" Style="{StaticResource Readout}"/>
+                                <ProgressBar x:Name="BatchProgress" Margin="0,9,14,0"
+                                             Minimum="0" Maximum="1"/>
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="CANCEL" Click="OnCancelBatch"
+                                    VerticalAlignment="Center"/>
+                        </Grid>
+                    </c:ChamferPanel>
+                </StackPanel>
+
+                <Grid Grid.Row="1" x:Name="LibraryStage">
+                    <!-- Two real rows rather than a scaled overlay. With the player shut its row
+                         is zero-high and the library has the lot; with it open the library row
+                         goes to Auto, so it takes exactly the height its compact cards and its
+                         index row need and the player gets everything else. Nothing is scaled, so
+                         the index row stays the size it always was and the cards stay readable. -->
+                    <!-- The player's row is sized by the panel's own animated height and the
+                         library simply takes what is left. Neither row ever changes *kind*:
+                         switching a row between Auto and Star at the end of a move is a layout
+                         jump however smooth everything before it was, and that jump was the snap
+                         at the end of both opening and closing. -->
+                    <Grid.RowDefinitions>
+                        <RowDefinition x:Name="PlayerRow" Height="Auto"/>
+                        <RowDefinition x:Name="LibraryRow" Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid x:Name="LibraryContent" Grid.Row="1">
+                        <Grid.RenderTransform>
+                            <TranslateTransform x:Name="StageSlide" Y="0"/>
+                        </Grid.RenderTransform>
+
+                    <!-- GRID VIEW -->
+                    <ScrollViewer x:Name="GridScroller" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+                        <ItemsControl x:Name="GridList" ItemTemplate="{StaticResource GridItem}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                    </ScrollViewer>
+
+                    <!-- CAROUSEL VIEW -->
+                    <Grid x:Name="CarouselHost" Visibility="Collapsed"
+                          Background="Transparent" PreviewMouseWheel="OnCarouselWheel"
+                          PreviewMouseLeftButtonDown="OnCarouselClick">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <ItemsControl x:Name="CarouselList" Grid.Row="0" ClipToBounds="True"
+                                      Focusable="False"
+                                      ItemTemplate="{StaticResource FlowItem}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <!-- The fan's spacing follows the same animated box, so the
+                                         cards close up as they shrink instead of leaving gaps. -->
+                                    <c:CoverFlowPanel
+                                        CardWidth="{Binding CardBoxWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                                        CardHeight="{Binding CardBoxHeight, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center"
+                                    Margin="0,4,0,16">
+                            <Button Content="◄" Style="{StaticResource BtnSquare}" Click="OnCarouselPrev"/>
+                            <c:ChamferPanel Background="{DynamicResource BgDeep}"
+                                            Stroke="{DynamicResource HairlineSoft}"
+                                            Chamfer="{DynamicResource ChamferSmall}" Corners="Diagonal"
+                                            Padding="18,7" Margin="10,0">
+                                <TextBlock x:Name="CarouselIndex" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextDim}" Text="-- / --"/>
+                            </c:ChamferPanel>
+                            <Button Content="►" Style="{StaticResource BtnSquare}" Click="OnCarouselNext"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock x:Name="LibraryEmptyText"
+                               Text="NO TIMELAPSES YET — RECORD ONE AND IT APPEARS HERE"
+                               Foreground="{DynamicResource TextFaint}" FontWeight="Bold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Visibility="Collapsed"/>
+                    </Grid>
+
+                    <!-- ── PLAYER ──
+                         Same plate language as everywhere else: chamfered outline, slant-tag
+                         heading, index code, marks along the foot. Its own corner is cut bottom-
+                         left so it reads as machined into the space the carousel just vacated. -->
+                    <!-- Height starts at a real zero rather than Auto: a To-only animation reads
+                         the current value as its From, and NaN in gives NaN out. -->
+                    <c:ChamferPanel x:Name="PlayerPanel" Grid.Row="0" Style="{StaticResource Plate}"
+                                    Visibility="Collapsed" Opacity="0" Height="0" Padding="18,14,18,14"
+                                    Margin="0,0,0,10" Cuts="0,34,0,0" ClipContent="True"
+                                    RenderTransformOrigin="0.5,0">
+                        <c:ChamferPanel.RenderTransform>
+                            <TranslateTransform x:Name="PlayerSlide" Y="-28"/>
+                        </c:ChamferPanel.RenderTransform>
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <HeaderedContentControl Grid.Row="0" Style="{StaticResource PlateHead}"
+                                                    Margin="0,0,44,0">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock x:Name="PlayerTitle" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock x:Name="PlayerCode" Text="PLAY" Style="{StaticResource Label}"
+                                               Foreground="{DynamicResource TextFaint}"
+                                               VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                    <Button Content="CLOSE" Click="OnClosePlayer" Padding="10,4"/>
+                                </StackPanel>
+                            </HeaderedContentControl>
+
+                            <!-- The frame itself. Chamfered and clipped so the picture takes the
+                                 plate's shape rather than sitting in a rectangle on top of it. -->
+                            <!-- Sized to the clip's own aspect in code (see FitPlayerFrame) so the
+                                 picture fills its plate instead of floating in a wide black band. -->
+                            <c:ChamferPanel x:Name="PlayerFrame" Grid.Row="1" Background="#FF000000"
+                                            Stroke="{DynamicResource HairlineSoft}"
+                                            Chamfer="{DynamicResource ChamferSmall}" Corners="Diagonal"
+                                            Padding="0" ClipContent="True" Margin="0,2,0,0"
+                                            HorizontalAlignment="Center" SizeChanged="OnPlayerFrameResized">
+                                <Grid>
+                                    <Image x:Name="PlayerImage" Stretch="Uniform"
+                                           RenderOptions.BitmapScalingMode="LowQuality"/>
+                                    <c:RegistrationMarks Stroke="#FFFFFFFF" Arm="16" Gap="10" Opacity="0.22"
+                                                         ShowOuterTicks="False" IsHitTestVisible="False"/>
+                                    <TextBlock x:Name="PlayerStatus" Foreground="{DynamicResource TextFaint}"
+                                               FontWeight="Bold" FontSize="11"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Grid>
+                            </c:ChamferPanel>
+
+                            <Grid Grid.Row="2" Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="PlayPauseButton" Grid.Column="0" Content="❚❚"
+                                        Style="{StaticResource BtnSquare}" Click="OnPlayPause"/>
+                                <TextBlock x:Name="PlayerTime" Grid.Column="1" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextDim}"
+                                           VerticalAlignment="Center" Margin="14,0" MinWidth="104"/>
+                                <Slider x:Name="PlayerSeek" Grid.Column="2" Minimum="0" Maximum="1"
+                                        VerticalAlignment="Center"
+                                        Thumb.DragStarted="OnSeekStart" Thumb.DragCompleted="OnSeekEnd"
+                                        ValueChanged="OnSeekChanged"/>
+                                <c:BarCode Grid.Column="3" Width="40" Height="12" Bars="10" Seed="53"
+                                           Margin="18,0,14,0" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="4" Text="SPEED" Style="{StaticResource FieldLabel}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <ComboBox x:Name="SpeedCombo" Grid.Column="5" Width="86"
+                                          SelectionChanged="OnSpeedChanged"/>
+                            </Grid>
+                        </Grid>
+                    </c:ChamferPanel>
+                </Grid>
+
+            </Grid>
+
+            <!-- ─────────── CONFIG ───────────
+
+                 One machined assembly. Plates butt together with no gaps; where a seam jogs,
+                 BOTH plates carry mirrored edge profiles so the cut in one is a tab on the
+                 other — never a hole. Plates that protrude are drawn into a neighbour's cell
+                 with a negative margin, and every plate's content is padded clear of its own
+                 cuts. PIERCAM_LAYOUTCHECK=1 proves that mechanically (see RunLayoutCheck). -->
+            <ScrollViewer x:Name="ConfigPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+                <Grid Margin="0,0,0,20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.15*"/>
+                        <ColumnDefinition Width="1*"/>
+                        <ColumnDefinition Width="1.05*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 01 · APPEARANCE. Top-left corner of the assembly. Its right edge is set
+                         back 80px for the first 110px so SITE's header can overhang it; its
+                         bottom-right is cut up 60px where VIDEO's index tab rises into it. -->
+                    <c:ChamferPanel x:Name="PlateAppearance" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                                    Style="{StaticResource Plate}" Cuts="26,0,0,0"
+                                    RightEdge="80>0@110" BottomEdge="0>60@-320" Padding="20,18,20,18">
+                        <StackPanel>
+                            <HeaderedContentControl Style="{StaticResource PlateHead}" Margin="0,0,100,0">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock Text="APPEARANCE" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <TextBlock Text="01 / UI" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextFaint}"/>
+                            </HeaderedContentControl>
+                            <!-- Left-aligned and held 100px short on the right: this plate's right
+                                 edge is set back 80px for its first 110px, under SITE's header. -->
+                            <ItemsControl x:Name="ThemeChips" HorizontalAlignment="Left" Margin="0,0,100,0">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                            </ItemsControl>
+                            <!-- The switches sit under the palette rather than beside it: beside
+                                 it they only fit when the window is wide, and the startup note
+                                 was the first thing to be cut off. Two short columns, both
+                                 left-aligned with the chips, and well below the 110px setback
+                                 that SITE's header overhangs. -->
+                            <Rectangle Style="{StaticResource Divider}" Margin="0,4,100,14"/>
+                            <!-- A WrapPanel, so on a narrow window the startup column drops
+                                 under the interface column instead of being cut off. -->
+                            <WrapPanel Margin="0,0,100,0">
+                                <StackPanel MinWidth="200" Margin="0,0,28,0">
+                                    <CheckBox x:Name="AnimationsCheck" Content="INTERFACE ANIMATION"
+                                              Checked="OnAnimationsChanged" Unchecked="OnAnimationsChanged"/>
+                                    <CheckBox x:Name="ChromeCheck" Content="VIEWPORT FRAME MARKS"
+                                              Checked="OnChromeChanged" Unchecked="OnChromeChanged"/>
+                                </StackPanel>
+                                <StackPanel MaxWidth="400" Margin="0,0,0,4">
+                                    <CheckBox x:Name="RunAtLoginCheck" Content="START WITH WINDOWS"
+                                              Checked="OnStartupChanged" Unchecked="OnStartupChanged"/>
+                                    <CheckBox x:Name="StartMinimisedCheck" Content="START MINIMISED"
+                                              Checked="OnStartupChanged" Unchecked="OnStartupChanged"/>
+                                    <TextBlock x:Name="StartupHint" Style="{StaticResource FieldLabel}"
+                                               TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                </StackPanel>
+                            </WrapPanel>
+                            <!-- Instrument markings along the foot. Ends 340px short of the right
+                                 edge, which is where VIDEO's tab rises through this plate. -->
+                            <Grid VerticalAlignment="Bottom" Margin="0,24,340,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <c:BarCode Grid.Column="0" Width="54" Height="16" Bars="13" Seed="21"
+                                           VerticalAlignment="Bottom"/>
+                                <c:DataGrid Grid.Column="1" Width="46" Height="16" Cell="4" Seed="9"
+                                            Margin="14,0,0,0" VerticalAlignment="Bottom"/>
+                                <c:Connector Grid.Column="2" Height="18" Margin="20,0,20,0"
+                                             VerticalAlignment="Bottom" Lead="0.3"
+                                             Stroke="{DynamicResource HairlineSoft}"
+                                             StartCap="Ring" EndCap="Tick"/>
+                                <TextBlock Grid.Column="3" x:Name="AppearanceStamp"
+                                           Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextFaint}"
+                                           VerticalAlignment="Bottom"/>
+                            </Grid>
+                        </StackPanel>
+                    </c:ChamferPanel>
+
+                    <!-- 03 · VIDEO OUTPUT. Drawn 60px up into APPEARANCE's row; only the right
+                         320px of that band is plate (the index tab), mirroring APPEARANCE's
+                         bottom-right cut. Content lives in two rows: the tab, then the body. -->
+                    <c:ChamferPanel x:Name="PlateVideo" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                    Style="{StaticResource Plate}" Margin="0,-60,0,0"
+                                    TopEdge="60>0@-320" Padding="20,0,20,18">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="60"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- The tab: index code and a strip, kept inside the raised 320px. -->
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right"
+                                        VerticalAlignment="Center" Margin="0,12,0,0">
+                                <c:HazardStripes Width="44" Height="9" StripeWidth="2" StripeGap="4"
+                                                 VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                <c:BarCode Width="40" Height="12" Bars="10" Seed="5"
+                                           VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                <TextBlock Text="03 / ENC" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Row="1" Margin="0,2,0,0">
+                                <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                    <HeaderedContentControl.Header>
+                                        <TextBlock Text="VIDEO OUTPUT" Style="{StaticResource PlateTitle}"/>
+                                    </HeaderedContentControl.Header>
+                                    <TextBlock Text="" Style="{StaticResource Label}"/>
+                                </HeaderedContentControl>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="PLAYBACK RATE" Style="{StaticResource FieldLabel}"/>
+                                        <ComboBox x:Name="FpsCombo" SelectionChanged="OnPlanChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="QUALITY" Style="{StaticResource FieldLabel}"/>
+                                        <ComboBox x:Name="QualityCombo" SelectionChanged="OnPlanChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="4">
+                                        <TextBlock Text="RESOLUTION" Style="{StaticResource FieldLabel}"/>
+                                        <ComboBox x:Name="ResolutionCombo" SelectionChanged="OnPlanChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="6">
+                                        <TextBlock Text="NOISE REDUCTION" Style="{StaticResource FieldLabel}"/>
+                                        <ComboBox x:Name="DenoiseCombo" SelectionChanged="OnPlanChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="8">
+                                        <TextBlock Text="ENCODER SPEED" Style="{StaticResource FieldLabel}"/>
+                                        <ComboBox x:Name="PresetCombo" SelectionChanged="OnPresetChanged"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Style="{StaticResource FieldLabel}"
+                                               TextWrapping="Wrap" Margin="0,0,20,0"
+                                               Text="Sensor noise is what makes a night sky expensive to store. Medium noise reduction roughly halves the file and usually looks better than the original."/>
+                                    <CheckBox Grid.Column="1" x:Name="KeepRawCheck" VerticalAlignment="Center"
+                                              Checked="OnKeepRawChanged" Unchecked="OnKeepRawChanged"
+                                              Content="ALSO KEEP RAW FRAMES (~9 GB / NIGHT)"/>
+                                </Grid>
+                                <Rectangle Style="{StaticResource Divider}" Margin="0,16"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="FFMPEG.EXE"
+                                               Style="{StaticResource FieldLabel}" Margin="0,0,14,0"
+                                               VerticalAlignment="Center"/>
+                                    <TextBox Grid.Column="1" x:Name="FfmpegPathBox"
+                                             LostFocus="OnFfmpegPathChanged"/>
+                                    <Button Grid.Column="2" Content="BROWSE" Margin="8,0,0,0"
+                                            Click="OnBrowseFfmpeg"/>
+                                </Grid>
+                                <TextBlock x:Name="FfmpegStatus" Style="{StaticResource FieldLabel}"
+                                           Margin="0,8,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+
+                            <!-- Foot strip. This plate is stretched to the height of SITE beside
+                                 it, so the slack becomes instrument markings rather than blank fill. -->
+                            <Grid Grid.Row="2" VerticalAlignment="Bottom" Margin="0,16,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <c:TickRule Grid.Column="0" Height="12" VerticalAlignment="Bottom"
+                                            Margin="0,0,24,0"/>
+                                <c:DataGrid Grid.Column="1" Width="46" Height="14" Cell="4" Seed="17"
+                                            Margin="0,0,14,0" VerticalAlignment="Bottom"/>
+                                <c:BarCode Grid.Column="2" Width="54" Height="14" Bars="13" Seed="41"
+                                           VerticalAlignment="Bottom"/>
+                            </Grid>
+                        </Grid>
+                    </c:ChamferPanel>
+
+                    <!-- 02 · SITE & ROOF. The right spine. Drawn 80px into APPEARANCE's column
+                         so its header overhangs, then its left edge returns to the column line
+                         at 45° — the mirror of APPEARANCE's right edge. Everything below the
+                         header is indented 80px to stay inside the narrower part. -->
+                    <c:ChamferPanel x:Name="PlateSite" Grid.Row="0" Grid.Column="2" Grid.RowSpan="2"
+                                    Style="{StaticResource PlateAccent}" Margin="-80,0,0,0"
+                                    LeftEdge="0>80@110" Cuts="0,52,0,0" Padding="20,18,20,18">
+                        <StackPanel>
+                            <HeaderedContentControl Style="{StaticResource PlateHead}" Margin="0,0,44,0">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock Text="SITE &amp; ROOF" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <TextBlock Text="02 / GEO" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextFaint}"/>
+                            </HeaderedContentControl>
+                            <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,0,44,0"
+                                       Text="Coordinates drive dusk-to-dawn scheduling. The roof file is written by the observatory when a roof moves, not on a timer, so an hours-old file is normal. PierCam only ever reads it."/>
+
+                            <StackPanel Margin="80,16,0,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="LATITUDE" Style="{StaticResource FieldLabel}"/>
+                                        <TextBox x:Name="LatBox" LostFocus="OnSiteChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="LONGITUDE" Style="{StaticResource FieldLabel}"/>
+                                        <TextBox x:Name="LonBox" LostFocus="OnSiteChanged"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="ELEVATION (M)" Style="{StaticResource FieldLabel}"/>
+                                        <TextBox x:Name="ElevBox" LostFocus="OnSiteChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
+                                        <Button Content="IMPORT FROM NINA" Click="OnImportSiteFromNina"/>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock x:Name="SiteHint" Style="{StaticResource FieldLabel}"
+                                           Margin="0,10,0,0" TextWrapping="Wrap"/>
+
+                                <Rectangle Style="{StaticResource Divider}" Margin="0,16"/>
+
+                                <TextBlock Text="ROOF STATUS FILE" Style="{StaticResource FieldLabel}"/>
+                                <TextBox x:Name="RoofPathBox" LostFocus="OnRoofPathChanged"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Button Content="DETECT" Click="OnDetectRoofFile"
+                                            ToolTip="Look for an SFRO-style roof file on the mapped site share"/>
+                                    <Button Content="BROWSE" Margin="7,0,0,0" Click="OnBrowseRoofFile"/>
+                                </StackPanel>
+                                <Grid Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="POLL (S)" Style="{StaticResource FieldLabel}"/>
+                                        <TextBox x:Name="RoofPollBox" LostFocus="OnRoofPathChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="GIVE UP AFTER (MIN)" Style="{StaticResource FieldLabel}"/>
+                                        <TextBox x:Name="RoofStaleBox" LostFocus="OnRoofPathChanged"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="RUN ON AFTER CLOSE (MIN)" Style="{StaticResource FieldLabel}"/>
+                                        <TextBox x:Name="RoofLingerBox" LostFocus="OnRoofPathChanged"
+                                                 ToolTip="Keep filming this long after the roof shuts, so the closing roof is in the video"/>
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2" Style="{StaticResource FieldLabel}"
+                                               TextWrapping="Wrap" VerticalAlignment="Bottom" Margin="0,0,0,6"
+                                               Text="The file is written once the roof has finished moving, so stopping on it misses the move."/>
+                                </Grid>
+                                <CheckBox x:Name="RoofUnknownCheck" Margin="0,12,0,0"
+                                          Checked="OnRoofUnknownChanged" Unchecked="OnRoofUnknownChanged"
+                                          Content="RECORD WHEN STATUS UNKNOWN"/>
+                                <c:ChamferPanel Background="{DynamicResource BgDeep}"
+                                                Stroke="{DynamicResource HairlineSoft}"
+                                                Chamfer="{DynamicResource ChamferSmall}" Corners="Diagonal"
+                                                Padding="12,10" Margin="0,12,0,0">
+                                    <TextBlock x:Name="RoofStatusLine" Style="{StaticResource FieldLabel}"
+                                               Margin="0" TextWrapping="Wrap"/>
+                                </c:ChamferPanel>
+                            </StackPanel>
+                        </StackPanel>
+                    </c:ChamferPanel>
+
+                    <!-- 04 · AUTO-EXPOSURE. Its bottom-left corner is cut 36px; DIAGNOSTICS
+                         below rises into that triangle. Padding keeps the last field clear. -->
+                    <c:ChamferPanel x:Name="PlateAE" Grid.Row="2" Grid.Column="0"
+                                    Style="{StaticResource Plate}" Cuts="0,0,0,36" Padding="20,18,20,24">
+                        <StackPanel>
+                            <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock Text="AUTO-EXPOSURE" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <TextBlock Text="04 / AE" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextFaint}"/>
+                            </HeaderedContentControl>
+                            <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,0,0,14"
+                                       Text="Bounds the twilight ramp. Widen for a darker sky or a slower lens."/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="MIN SUB (S)" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AeMinExpBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="MAX SUB (S)" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AeMaxExpBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="MIN GAIN" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AeMinGainBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="MAX GAIN" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AeMaxGainBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="TARGET SKY" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AeTargetBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="MAX STEP / FRAME" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AeStepBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </c:ChamferPanel>
+
+                    <!-- 05 · IMAGE TUNING -->
+                    <c:ChamferPanel x:Name="PlateImage" Grid.Row="2" Grid.Column="1" Style="{StaticResource Plate}">
+                        <StackPanel>
+                            <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock Text="IMAGE TUNING" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <TextBlock Text="05 / IMG" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextFaint}"/>
+                            </HeaderedContentControl>
+                            <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,0,0,14"
+                                       Text="Shadow depth is the one to reach for if the sky looks milky."/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="SHADOW CLIP (σ)" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="ShadowClipBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="SHADOW DEPTH" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="ShadowDepthBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="SMOOTHING" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="SmoothingBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="OFFSET" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="OffsetBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="WB RED" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="WbRedBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="WB BLUE" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="WbBlueBox" LostFocus="OnAdvancedChanged"/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </c:ChamferPanel>
+
+                    <!-- 06 · STORAGE -->
+                    <c:ChamferPanel x:Name="PlateStorage" Grid.Row="2" Grid.Column="2" Style="{StaticResource Plate}">
+                        <StackPanel>
+                            <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock Text="STORAGE" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <TextBlock Text="06 / DSK" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextFaint}"/>
+                            </HeaderedContentControl>
+                            <TextBlock Text="LIBRARY FOLDER" Style="{StaticResource FieldLabel}"/>
+                            <DockPanel Margin="0,0,0,12">
+                                <Button DockPanel.Dock="Right" Content="BROWSE" Margin="8,0,0,0"
+                                        Click="OnBrowseLibrary"/>
+                                <TextBox x:Name="LibraryRootBox" LostFocus="OnLibraryRootChanged"/>
+                            </DockPanel>
+                            <TextBlock Text="STOP BELOW FREE SPACE (GB)" Style="{StaticResource FieldLabel}"/>
+                            <TextBox x:Name="MinFreeDiskBox" Width="130" HorizontalAlignment="Left"
+                                     LostFocus="OnMinFreeChanged"/>
+
+                            <Rectangle Style="{StaticResource Divider}" Margin="0,16"/>
+
+                            <CheckBox x:Name="AutoDownscaleCheck" Content="SHRINK OLD TIMELAPSES AUTOMATICALLY"
+                                      Checked="OnHousekeepingChanged" Unchecked="OnHousekeepingChanged"/>
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="OLDER THAN (DAYS)" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AutoDownscaleDaysBox" Width="110"
+                                             HorizontalAlignment="Left" LostFocus="OnHousekeepingChanged"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="SHRINK TO" Style="{StaticResource FieldLabel}"/>
+                                    <!-- Both resolution pickers list the same Targets array, and
+                                         two ItemsControls over one collection share its default
+                                         view — so without this they synchronise, and changing the
+                                         batch tool's resolution silently changes what the
+                                         unattended sweep will re-encode to. -->
+                                    <ComboBox x:Name="AutoDownscaleTargetCombo"
+                                              IsSynchronizedWithCurrentItem="False"
+                                              SelectionChanged="OnHousekeepingChanged"/>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock x:Name="HousekeepingHint" Style="{StaticResource FieldLabel}"
+                                       TextWrapping="Wrap" Margin="0,8,0,0"/>
+
+                            <Rectangle Style="{StaticResource Divider}" Margin="0,16"/>
+                            <TextBlock x:Name="StorageSummary" Style="{StaticResource FieldLabel}"
+                                       TextWrapping="Wrap" LineHeight="18"/>
+                            <Grid Margin="0,14,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <c:Connector Grid.Column="0" Height="16" Margin="0,0,16,0"
+                                             VerticalAlignment="Bottom" Lead="0.6" Rise="True"
+                                             Stroke="{DynamicResource HairlineSoft}"
+                                             StartCap="Dot" EndCap="Square"/>
+                                <c:BarCode Grid.Column="1" Width="48" Height="14" Bars="12" Seed="33"
+                                           VerticalAlignment="Bottom"/>
+                            </Grid>
+                        </StackPanel>
+                    </c:ChamferPanel>
+
+                    <!-- 07 · DIAGNOSTICS. Bottom rail. Drawn 36px up so its top-left corner
+                         forms the triangle that AUTO-EXPOSURE's cut leaves — the mirror of
+                         Cuts="0,0,0,36" above it. Bottom-right cut 64 closes the assembly. -->
+                    <c:ChamferPanel x:Name="PlateDiag" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="3"
+                                    Style="{StaticResource Plate}" Margin="0,-36,0,0"
+                                    TopEdge="0>36@0" Cuts="0,0,64,28" Padding="20,40,20,18">
+                        <!-- Two arrangements, switched by FitDiagnostics on the window width.
+                             Wide: facts | paths | buttons across. Narrow: facts, then paths,
+                             then the buttons wrapped underneath. The paths never wrap — a long
+                             path folding onto six lines is what used to make this plate tower
+                             on a narrow window — they trim with an ellipsis and carry the full
+                             text as a tooltip; COPY DIAGNOSTICS has them whole. -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition x:Name="DiagGutter" Width="28"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                    <HeaderedContentControl.Header>
+                                        <TextBlock Text="DIAGNOSTICS" Style="{StaticResource PlateTitle}"/>
+                                    </HeaderedContentControl.Header>
+                                    <TextBlock Text="07 / SYS" Style="{StaticResource Label}"
+                                               Foreground="{DynamicResource TextFaint}"/>
+                                </HeaderedContentControl>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition x:Name="DiagFactsCol" Width="Auto"/>
+                                        <ColumnDefinition x:Name="DiagTextGutter" Width="36"/>
+                                        <ColumnDefinition x:Name="DiagPathsCol" Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Column="0" x:Name="DiagnosticsText" FontSize="11"
+                                               LineHeight="19" TextWrapping="NoWrap"
+                                               TextTrimming="CharacterEllipsis"
+                                               Foreground="{DynamicResource TextDim}"/>
+                                    <TextBlock Grid.Column="2" x:Name="DiagnosticsPaths" FontSize="11"
+                                               LineHeight="19" TextWrapping="NoWrap"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
+                                               Foreground="{DynamicResource TextFaint}"/>
+                                </Grid>
+                                <!-- The tip jar, stamped at the foot of the plate like a maker's
+                                     mark rather than banner-ed anywhere you have to look at it.
+                                     The about box behind the wordmark says the same thing at
+                                     length; this is just the part worth seeing in passing. -->
+                                <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
+                                    <c:SlantTag Width="11" Height="9" Slant="4" VerticalAlignment="Center"
+                                                Fill="{DynamicResource TextFaint}" Margin="0,0,10,0"/>
+                                    <TextBlock Style="{StaticResource Label}" VerticalAlignment="Center"
+                                               Text="PIERCAM IS FREE · IF IT EARNS ITS KEEP"/>
+                                    <TextBlock x:Name="SupportLink" Style="{StaticResource LinkText}"
+                                               VerticalAlignment="Center" Margin="9,0,0,0"
+                                               MouseLeftButtonUp="OnSupport"
+                                               ToolTip="Opens ko-fi.com in your browser"/>
+                                </StackPanel>
+                            </StackPanel>
+                            <Rectangle x:Name="DiagRule" Grid.Column="1" Width="1" HorizontalAlignment="Center"
+                                       Fill="{DynamicResource HairlineSoft}" Margin="0,2"/>
+                            <!-- Right margin keeps the whole column clear of the 64px corner cut.
+                                 One button per line at 250px wide; when this panel is let out to
+                                 the full plate width the same buttons wrap two to a row. -->
+                            <WrapPanel x:Name="DiagButtons" Grid.Column="2" VerticalAlignment="Center"
+                                       Width="250" Margin="0,0,48,2">
+                                <Button Content="OPEN LOG FOLDER" Click="OnOpenLogFolder"
+                                        Width="242" Margin="0,0,8,8"/>
+                                <Button Content="COPY DIAGNOSTICS" Click="OnCopyDiagnostics"
+                                        Width="242" Margin="0,0,8,8"/>
+                                <Button Content="OPEN SETTINGS FILE" Click="OnOpenSettingsFile"
+                                        Width="242" Margin="0,0,8,8"/>
+                                <Button Content="RESTORE DEFAULTS" Style="{StaticResource BtnDanger}"
+                                        Click="OnRestoreDefaults" Width="242" Margin="0,0,8,8"/>
+                            </WrapPanel>
+                        </Grid>
+                    </c:ChamferPanel>
+                </Grid>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- ══════════════════ STATUS ══════════════════ -->
+        <c:ChamferPanel x:Name="StatusPlate" Grid.Row="2" Style="{StaticResource GlassPanel}" Corners="Diagonal"
+                        Margin="16,12,16,14" Padding="18,9">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel x:Name="StatusState" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Rectangle x:Name="StateChip" Width="8" Height="8" Fill="{DynamicResource TextFaint}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="StatePill" Text="OFFLINE" Style="{StaticResource Label}"
+                               Margin="9,0,16,0" VerticalAlignment="Center"/>
+                    <Rectangle Width="1" Fill="{DynamicResource Hairline}" Margin="0,1,16,1"/>
+                </StackPanel>
+                <!-- Status text and the tip jar share the middle column, so the link sits just
+                     after the last reading rather than drifting to the far end of the bar. Both
+                     sit in Auto columns for that; the cap that lets the text ellipsise on a
+                     narrow window is applied by FitStatusBar, since Auto measures unbounded. -->
+                <Grid x:Name="StatusMiddle" Grid.Column="1" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusLeft" Grid.Column="0" Style="{StaticResource Label}"
+                               Foreground="{DynamicResource TextDim}" TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="StatusKofi" Grid.Column="1" Style="{StaticResource LinkText}"
+                               Text="KO-FI" Margin="18,0,0,0" VerticalAlignment="Center"
+                               MouseLeftButtonUp="OnSupport"
+                               ToolTip="Opens ko-fi.com in your browser"/>
+                </Grid>
+                <TextBlock x:Name="StatusRight" Grid.Column="2" Style="{StaticResource Label}"
+                           Foreground="{DynamicResource TextFaint}" VerticalAlignment="Center"/>
+            </Grid>
+        </c:ChamferPanel>
+    </Grid>
+</Window>

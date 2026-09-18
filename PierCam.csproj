@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>PierCam</AssemblyName>
+    <RootNamespace>PierCam</RootNamespace>
+    <Product>PierCam</Product>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+
+    <!-- The ASI SDK is 64-bit only. -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- WPF resolves specific cultures while laying out text; InvariantGlobalization makes that
+         throw ("Cannot find non-neutral culture related to 'en-us'") and the window never opens. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+
+    <!-- Workstation, concurrent GC: this process runs for weeks and should give memory back
+         rather than hold a large heap the way a server-GC process does. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <RetainVMGarbageCollection>false</RetainVMGarbageCollection>
+
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
+
+    <!-- Regenerate with scratchpad\make-icon.ps1 if the accent colour ever changes. -->
+    <ApplicationIcon>piercam.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ffmpeg ships beside the exe; the encoder also falls back to PATH. -->
+    <None Include="tools\ffmpeg.exe" Condition="Exists('tools\ffmpeg.exe')">
+      <Link>tools\ffmpeg.exe</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
