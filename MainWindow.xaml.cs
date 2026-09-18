@@ -2970,7 +2970,9 @@ public partial class MainWindow : Window
     {
         var facts = new List<string>
         {
-            $"PIERCAM            1.2",
+            // From the assembly, never a literal: this is the line people paste into a bug
+            // report, so a stale hand-typed number here is worse than no number at all.
+            $"PIERCAM            {VersionText}",
             $"THEME              {ThemeManager.Current.Name}",
             $"ASI SDK            {(AsiSdk.ResolvedPath is null ? "not loaded" : AsiSdk.GetSdkVersion())}",
             $"CAMERAS DETECTED   {_cameras.Count}",
