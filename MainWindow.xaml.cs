@@ -109,8 +109,6 @@ public partial class MainWindow : Window
 
     private void OnWindowLoaded(object sender, RoutedEventArgs e)
     {
-        // The wordmark's sub-line carries the build, so a screenshot says which version it is.
-        WordmarkCode.Text = $"V{VersionText}";
         SupportLink.Text = SupportLabel;
 
         WireMenu(NavMenuButton, NavPopup, NavPopupPlate);

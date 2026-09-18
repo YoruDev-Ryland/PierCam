@@ -231,10 +231,11 @@
                                     VerticalAlignment="Center" Margin="0,0,11,0"/>
                         <TextBlock x:Name="WordmarkText" Grid.Column="1" Grid.Row="0" Text="PIERCAM"
                                    Style="{StaticResource Display}" FontSize="17" Margin="0,-3,0,0"/>
+                        <!-- No version here: it belongs in the about box behind this plate, which
+                             is where you go when you actually want it. On the header it is a
+                             number nobody reads after the first day. -->
                         <StackPanel x:Name="WordmarkSub" Grid.Column="1" Grid.Row="1" Orientation="Horizontal" Margin="0,1,0,0">
                             <TextBlock Style="{StaticResource Label}" Text="ALL-SKY"/>
-                            <TextBlock Style="{StaticResource Label}" Text="·" Margin="5,0"/>
-                            <TextBlock x:Name="WordmarkCode" Style="{StaticResource Label}" Text="V1.0"/>
                             <c:BarCode Width="26" Height="8" Bars="7" Seed="3" Margin="9,0,0,0"
                                        VerticalAlignment="Center"/>
                         </StackPanel>
