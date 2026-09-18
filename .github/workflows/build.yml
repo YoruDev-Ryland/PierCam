@@ -33,9 +33,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
@@ -53,24 +53,39 @@ jobs:
       # generous (10 GB) on every plan, so this downloads once rather than once per run.
       - name: Restore cached ffmpeg
         id: ffmpeg-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: tools/ffmpeg.exe
-          key: ffmpeg-win64-gpl-v1
+          key: ffmpeg-win64-gpl-essentials-v2
 
       - name: Fetch ffmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          # BtbN's builds are GPL (libx264 included) and hosted on GitHub, which is markedly
-          # more reliable from a runner than a third-party mirror.
-          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
-          Invoke-WebRequest $url -OutFile ffmpeg.zip -UseBasicParsing
+          # Gyan's "essentials" build first: it is a curated GPL build with everything PierCam
+          # needs (libx264, hqdn3d, scale, rawvideo) at ~98 MB, against ~157 MB for a full
+          # master build. That 59 MB is in every download a user makes, so it is worth
+          # preferring. BtbN is the fallback because it is hosted on GitHub and will be
+          # reachable from a runner even if the first host is not.
+          $sources = @(
+            'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+            'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+          )
+          $ok = $false
+          foreach ($url in $sources) {
+            try {
+              Write-Host "trying $url"
+              Invoke-WebRequest $url -OutFile ffmpeg.zip -UseBasicParsing -TimeoutSec 300
+              $ok = $true; break
+            } catch { Write-Warning "failed: $($_.Exception.Message)" }
+          }
+          if (-not $ok) { throw 'could not download ffmpeg from any source' }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract -Force
           $exe = Get-ChildItem ffmpeg-extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           New-Item -ItemType Directory -Path tools -Force | Out-Null
           Copy-Item $exe.FullName tools/ffmpeg.exe -Force
           Remove-Item ffmpeg.zip, ffmpeg-extract -Recurse -Force
+          '{0:N1} MB' -f ((Get-Item tools/ffmpeg.exe).Length / 1MB)
           & tools/ffmpeg.exe -version | Select-Object -First 1
 
       - name: Ensure Inno Setup
@@ -96,7 +111,7 @@ jobs:
       # is 500 MB total and the installer is ~100 MB, so this expires fast on purpose.
       - name: Upload installer
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: PierCam-${{ steps.ver.outputs.version }}-Setup
           path: dist/*Setup.exe

@@ -35,10 +35,17 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- ffmpeg ships beside the exe; the encoder also falls back to PATH. -->
+    <!-- ffmpeg ships beside the exe; the encoder also falls back to PATH.
+
+         ExcludeFromSingleFile matters more than it looks. A single-file publish otherwise
+         bundles this into PierCam.exe *as well as* copying it alongside, so every download
+         carried ffmpeg twice and the extra copy could never be run - the app launches
+         tools\ffmpeg.exe as a process, which has to be a real file on disk. It cost about
+         100 MB of the executable. -->
     <None Include="tools\ffmpeg.exe" Condition="Exists('tools\ffmpeg.exe')">
       <Link>tools\ffmpeg.exe</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </None>
   </ItemGroup>
 
