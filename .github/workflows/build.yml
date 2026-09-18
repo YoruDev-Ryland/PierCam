@@ -1,31 +1,34 @@
 name: Build installer
 
-# Deliberately NOT run on every push.
-#
-# This has to build on a Windows runner (WPF, and Inno Setup), and on GitHub's free plan
-# Windows minutes bill at 2x against a 2,000-minute monthly allowance — so a full run of this
-# workflow costs roughly 10-14 billable minutes while the repository is private. Building on
-# every commit would burn the month in a few days' work.
-#
-# Once the repository is public, Actions minutes on standard runners are free and unlimited,
-# and a `push:` trigger on main can safely be added below.
+# Public repositories get unlimited standard-runner minutes, so this builds on every push to
+# main. Doc-only changes are skipped anyway: a README edit does not need a 3-minute Windows
+# build. If this repository is ever made private again, note that Windows runners bill at 2x
+# against the free plan's monthly allowance and this trigger should go back to tags only.
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to stamp, e.g. 1.1 (default 0.0 for a scratch build)'
-        required: false
-        default: '0.0'
   push:
-    tags: ['v*']
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+  # A v* tag cuts a real, permanent release.
+  # Pushing a tag also pushes its commit, so both triggers can fire; the concurrency group
+  # below is keyed on the ref, which keeps them from fighting over the same release.
 
-# A second run started while the first is still going cancels it, rather than paying for both.
+# A newer run supersedes an older one on the same ref rather than both finishing.
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: write   # to create the Release on a tag
+  contents: write   # to create releases
 
 jobs:
   build:
@@ -34,6 +37,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # tags, so a main build can name itself after the last release
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -43,11 +48,21 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          $v = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '${{ inputs.version }}' }
-          if (-not $v) { $v = '0.0' }
-          $v = $v -replace '^v', ''
-          "version=$v" >> $env:GITHUB_OUTPUT
-          Write-Host "building version $v"
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $v = $env:GITHUB_REF_NAME -replace '^v', ''
+            $release = 'tag'
+          } else {
+            # Name a development build after the most recent release plus the run number, so
+            # successive builds sort sensibly and the assembly carries something traceable.
+            $last = (git tag --list 'v*' --sort=-v:refname | Select-Object -First 1) -replace '^v', ''
+            if (-not $last) { $last = '0.0' }
+            $parts = @($last -split '\.') + @('0','0')
+            $v = "$($parts[0]).$($parts[1]).$env:GITHUB_RUN_NUMBER"
+            $release = if ($env:GITHUB_EVENT_NAME -eq 'push') { 'rolling' } else { 'none' }
+          }
+          "version=$v"  >> $env:GITHUB_OUTPUT
+          "release=$release" >> $env:GITHUB_OUTPUT
+          Write-Host "version $v, release mode $release"
 
       # ffmpeg is ~98 MB and deliberately not in the repository. The cache is per-repository and
       # generous (10 GB) on every plan, so this downloads once rather than once per run.
@@ -62,11 +77,10 @@ jobs:
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          # Gyan's "essentials" build first: it is a curated GPL build with everything PierCam
-          # needs (libx264, hqdn3d, scale, rawvideo) at ~98 MB, against ~157 MB for a full
-          # master build. That 59 MB is in every download a user makes, so it is worth
-          # preferring. BtbN is the fallback because it is hosted on GitHub and will be
-          # reachable from a runner even if the first host is not.
+          # Gyan's "essentials" build first: a curated GPL build with everything PierCam needs
+          # (libx264, hqdn3d, scale, rawvideo) at ~98 MB, against ~157 MB for a full master
+          # build. That 59 MB is in every download a user makes. BtbN is the fallback because it
+          # is hosted on GitHub and will be reachable from a runner even if the first host is not.
           $sources = @(
             'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
             'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
@@ -86,7 +100,6 @@ jobs:
           Copy-Item $exe.FullName tools/ffmpeg.exe -Force
           Remove-Item ffmpeg.zip, ffmpeg-extract -Recurse -Force
           '{0:N1} MB' -f ((Get-Item tools/ffmpeg.exe).Length / 1MB)
-          & tools/ffmpeg.exe -version | Select-Object -First 1
 
       - name: Ensure Inno Setup
         shell: pwsh
@@ -107,28 +120,38 @@ jobs:
         shell: pwsh
         run: Get-ChildItem dist -File | ForEach-Object { '{0,-40} {1,8:N1} MB' -f $_.Name, ($_.Length / 1MB) }
 
-      # Manual runs keep the installer as an artifact briefly. Artifact storage on the free plan
-      # is 500 MB total and the installer is ~100 MB, so this expires fast on purpose.
+      # A permanent, versioned release for a tag.
+      - name: Publish release
+        if: steps.ver.outputs.release == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist/*Setup.exe, dist/*.zip).FullName `
+            --title "PierCam ${{ steps.ver.outputs.version }}" `
+            --generate-notes
+
+      # One rolling pre-release that always reflects main, replaced on each push rather than
+      # accumulating a release per commit.
+      - name: Update rolling build
+        if: steps.ver.outputs.release == 'rolling'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>$null
+          gh release create latest (Get-ChildItem dist/*Setup.exe, dist/*.zip).FullName `
+            --target $env:GITHUB_SHA `
+            --prerelease `
+            --title "Latest build from main (${{ steps.ver.outputs.version }})" `
+            --notes "Automatic build of the current main branch, replaced on every push. For a stable download use the latest tagged release instead."
+
+      # Pull requests build but publish nothing; keep the installer briefly so it can be tried.
       - name: Upload installer
-        if: github.ref_type != 'tag'
+        if: steps.ver.outputs.release == 'none'
         uses: actions/upload-artifact@v7
         with:
           name: PierCam-${{ steps.ver.outputs.version }}-Setup
           path: dist/*Setup.exe
           retention-days: 7
           compression-level: 0   # already compressed; recompressing wastes a minute
-
-      # Tagged builds go to a Release instead. Release assets do not count against the Actions
-      # artifact allowance, and they are what people actually download.
-      - name: Publish release
-        if: github.ref_type == 'tag'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create $env:GITHUB_REF_NAME `
-            (Get-ChildItem dist/*Setup.exe).FullName `
-            (Get-ChildItem dist/*.zip).FullName `
-            --title "PierCam ${{ steps.ver.outputs.version }}" `
-            --generate-notes `
-            --notes "Run the installer, or unzip the portable build. Windows will warn that it is unsigned. Needs ZWO's ASIStudio for ASICamera2.dll - see READ-ME-FIRST.txt."
