@@ -1,26 +1,23 @@
 name: Build installer
 
 # Public repositories get unlimited standard-runner minutes, so this builds on every push to
-# main. Doc-only changes are skipped anyway: a README edit does not need a 3-minute Windows
-# build. If this repository is ever made private again, note that Windows runners bill at 2x
-# against the free plan's monthly allowance and this trigger should go back to tags only.
+# main, and a v* tag cuts a permanent versioned release. If this repository is ever made
+# private again, note that Windows runners bill at 2x against the free plan's allowance, and
+# this should go back to tags and manual dispatch only.
+#
+# No paths-ignore on the push trigger, deliberately. Path filters and tag pushes interact
+# badly: a tag whose commit happened to touch only documentation would be silently skipped and
+# the release would never be built. Rebuilding on a README typo is the cheaper mistake.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
-      - '.gitattributes'
+    tags: ['v*']
   pull_request:
     branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
   workflow_dispatch:
-  # A v* tag cuts a real, permanent release.
-  # Pushing a tag also pushes its commit, so both triggers can fire; the concurrency group
-  # below is keyed on the ref, which keeps them from fighting over the same release.
 
 # A newer run supersedes an older one on the same ref rather than both finishing.
 concurrency:
