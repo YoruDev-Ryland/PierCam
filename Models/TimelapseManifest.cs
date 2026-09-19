@@ -47,6 +47,14 @@ internal sealed class TimelapseManifest
 
     public string VideoFile { get; set; } = "timelapse.mp4";
     public string PosterFile { get; set; } = "poster.jpg";
+    /// <summary>
+    /// A second copy of the night with the target marker burned in, beside the clean video.
+    /// Null when there is none; only set once the copy has been finished.
+    /// </summary>
+    public string? MarkedVideoFile { get; set; }
+    public string? MarkedPosterFile { get; set; }
+    public long MarkedVideoBytes { get; set; }
+
     public SessionStatus Status { get; set; } = SessionStatus.Recording;
     public string? Message { get; set; }
 
@@ -59,6 +67,8 @@ internal sealed class TimelapseManifest
     [JsonIgnore] public string FolderPath { get; set; } = string.Empty;
     [JsonIgnore] public string VideoPath => Path.Combine(FolderPath, VideoFile);
     [JsonIgnore] public string PosterPath => Path.Combine(FolderPath, PosterFile);
+    [JsonIgnore] public string? MarkedVideoPath => MarkedVideoFile is null ? null : Path.Combine(FolderPath, MarkedVideoFile);
+    [JsonIgnore] public string? MarkedPosterPath => MarkedPosterFile is null ? null : Path.Combine(FolderPath, MarkedPosterFile);
 
     /// <summary>Real-world time the timelapse covers.</summary>
     [JsonIgnore]

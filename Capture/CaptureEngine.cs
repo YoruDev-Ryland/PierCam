@@ -125,6 +125,20 @@ internal sealed class CaptureEngine : IDisposable
         StatusChanged?.Invoke();
     }
     public CameraDescriptor? ConnectedCamera => _camera?.Descriptor;
+    public string? CameraSerial => _camera is { SerialNumber.Length: > 0 } c ? c.SerialNumber : null;
+
+    /// <summary>
+    /// The target marker, when the app has one. Read once per frame. Every call into it is fenced
+    /// off inside the loop: the marker is decoration, and whatever goes wrong in it, the frame
+    /// goes on without it.
+    /// </summary>
+    public PierCam.Sky.TargetMarkerService? Marker { get; set; }
+    private int _markerFaults;
+
+    private void MarkerFault(Exception ex)
+    {
+        if (Interlocked.Increment(ref _markerFaults) <= 3) App.Log(ex, "Target marker");
+    }
 
     public EngineStatus Status
     {
@@ -274,6 +288,22 @@ internal sealed class CaptureEngine : IDisposable
                 v.OutputWidth, v.OutputHeight, v.Denoise);
 
             _recording = new RecordingSession(manifest, encoder, folder, ffmpeg, _processor.Width, _processor.Height);
+
+            // A second encoder for the copy with the target marker burned in, fed the same frames.
+            // It is an extra: if it cannot start, the night records as normal without it.
+            if (Marker?.WantsMarkedCopy == true)
+            {
+                try
+                {
+                    _recording.StartMarkedCopy(new FfmpegEncoder(ffmpeg, Path.Combine(folder, RecordingSession.MarkedVideoName),
+                        _processor.Width, _processor.Height, v.Fps, v.Crf, v.Preset,
+                        v.OutputWidth, v.OutputHeight, v.Denoise));
+                }
+                catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
+                {
+                    MarkerFault(ex);
+                }
+            }
             _smoothed.Reset();
             SetState(EngineState.Recording, $"Recording · {manifest.Title}");
         }
@@ -318,10 +348,93 @@ internal sealed class CaptureEngine : IDisposable
             session.Encoder.Dispose();
         }
 
+        FinishMarkedCopy(session);
         m.Save(session.Folder);
         SessionFinished?.Invoke(m);
 
         if (_state == EngineState.Recording) SetState(EngineState.Previewing, "Live view running");
+    }
+
+    /// <summary>
+    /// Closes the marked copy and records it in the manifest. A copy the marker never appeared in
+    /// (not calibrated, telescope parked all night, target never in view) would only be a duplicate
+    /// of the clean video, so it is discarded rather than kept.
+    /// </summary>
+    private static void FinishMarkedCopy(RecordingSession session)
+    {
+        var encoder = session.TakeMarkedCopy();
+        if (encoder is null) return;
+
+        var m = session.Manifest;
+        var video = Path.Combine(session.Folder, RecordingSession.MarkedVideoName);
+        var poster = Path.Combine(session.Folder, RecordingSession.MarkedPosterName);
+        try
+        {
+            if (session.MarkedFramesWithMarker > 0)
+            {
+                encoder.Finish(session.FfmpegPath, TimeSpan.FromMinutes(5));
+                if (File.Exists(video))
+                {
+                    m.MarkedVideoFile = RecordingSession.MarkedVideoName;
+                    m.MarkedVideoBytes = new FileInfo(video).Length;
+                    m.MarkedPosterFile = File.Exists(poster) ? RecordingSession.MarkedPosterName : null;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        {
+            App.Log(ex, "Marked copy");
+        }
+        finally
+        {
+            encoder.Dispose();
+        }
+
+        if (m.MarkedVideoFile is null)
+        {
+            RecordingSession.TryDelete(encoder.WorkingPath);
+            RecordingSession.TryDelete(video);
+            RecordingSession.TryDelete(poster);
+        }
+    }
+
+    /// <summary>
+    /// Feeds the marked copy: draws the marker into the frame (which then also serves as the live
+    /// view's) and hands it to the second encoder. Any failure drops the copy for the rest of the
+    /// night and nothing more - the clean recording carries on regardless.
+    /// </summary>
+    private void WriteMarkedCopy(RecordingSession session, byte[] rgb, int width, int height,
+        PierCam.Sky.MarkerPlacement? place, PierCam.Sky.TargetMarkerService? marker, ref bool drawn)
+    {
+        var encoder = session.MarkedCopy;
+        if (encoder is null || !ReferenceEquals(session, _recording)) return;
+        try
+        {
+            if (place is { } at && marker is not null)
+            {
+                marker.Draw(rgb, width, height, at);
+                drawn = true;
+                session.MarkedFramesWithMarker++;
+            }
+            if (encoder.HasExited) throw new IOException($"ffmpeg exited unexpectedly. {encoder.LastError()}");
+            encoder.WriteFrame(rgb);
+
+            var n = encoder.FramesWritten;
+            if (n == 10 || (n > 10 && (n & (n - 1)) == 0))
+                session.WritePoster(rgb, width, height, RecordingSession.MarkedPosterName);
+            if (n % 120 == 0) encoder.Flush();
+        }
+        catch (Exception ex)
+        {
+            // A stop racing this write is the normal end of the night, not a failure.
+            if (!ReferenceEquals(session, _recording)) return;
+            MarkerFault(ex);
+            if (session.TakeMarkedCopy() is { } dead)
+            {
+                dead.Dispose();
+                RecordingSession.TryDelete(dead.WorkingPath);
+            }
+        }
     }
 
     // ---- capture loop ----------------------------------------------------------------
@@ -392,6 +505,21 @@ internal sealed class CaptureEngine : IDisposable
 
                 if (autoExposing) StepAutoExposure(camera, recording);
 
+                // Target marker, part 1: hand over a clean frame if calibration asked for one (before
+                // anything is drawn on it), and find where the marker goes. No allocation, no waiting.
+                var marker = Marker;
+                var frameUtc = DateTime.UtcNow - exposure / 2;
+                PierCam.Sky.MarkerPlacement? place = null;
+                if (marker is not null)
+                {
+                    try
+                    {
+                        if (marker.WantsCalibrationFrame) marker.OfferCalibrationFrame(work, processor.Width, processor.Height, frameUtc);
+                        place = marker.PlacementFor(DateTime.UtcNow, processor.Width, processor.Height);
+                    }
+                    catch (Exception ex) { MarkerFault(ex); place = null; }
+                }
+
                 if (_settings.Video.BurnTimestamp)
                 {
                     var label = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
@@ -399,7 +527,36 @@ internal sealed class CaptureEngine : IDisposable
                         TextOverlay.Corner.BottomLeft, Math.Max(1, _settings.Video.TimestampScale));
                 }
 
-                if (recording && session is not null) WriteToSession(session, work, raw, processor, ct);
+                // Part 2: burned into the recording only when asked; otherwise drawn after the frame
+                // has gone to the encoder, so the recording stays clean and only the live view shows it.
+                // With a marked copy running, the recording stays clean and the copy gets the marker.
+                var burnIn = false;
+                var markedCopy = recording && session?.MarkedCopy is not null;
+                if (place is { } burnAt && recording && marker is not null && !markedCopy)
+                {
+                    try { if (marker.BurnIntoRecordings) { marker.Draw(work, processor.Width, processor.Height, burnAt); burnIn = true; } }
+                    catch (Exception ex) { MarkerFault(ex); }
+                }
+
+                if (recording && session is not null)
+                {
+                    var before = session.Encoder.FramesWritten;
+                    WriteToSession(session, work, raw, processor, ct);
+                    var written = session.Encoder.FramesWritten;
+                    if (marker is not null && written > before)
+                    {
+                        try { marker.FrameRecorded(session.Folder, written - 1, frameUtc, place); }
+                        catch (Exception ex) { MarkerFault(ex); }
+                    }
+                    if (markedCopy && written > before)
+                        WriteMarkedCopy(session, work, processor.Width, processor.Height, place, marker, ref burnIn);
+                }
+
+                if (place is { } showAt && !burnIn && marker is not null)
+                {
+                    try { marker.Draw(work, processor.Width, processor.Height, showAt); }
+                    catch (Exception ex) { MarkerFault(ex); }
+                }
 
                 Publish(work);
                 _lastFrameSeconds = sw.Elapsed.TotalSeconds;
@@ -714,6 +871,30 @@ internal sealed class RecordingSession
     private readonly int _width;
     private readonly int _height;
 
+    public const string MarkedVideoName = "timelapse-marked.mp4";
+    public const string MarkedPosterName = "poster-marked.jpg";
+
+    private FfmpegEncoder? _markedCopy;
+
+    /// <summary>The encoder for the copy with the marker burned in, while there is one.</summary>
+    public FfmpegEncoder? MarkedCopy => Volatile.Read(ref _markedCopy);
+
+    /// <summary>Frames of the marked copy the marker was actually drawn on.</summary>
+    public long MarkedFramesWithMarker { get; set; }
+
+    public void StartMarkedCopy(FfmpegEncoder encoder) => Volatile.Write(ref _markedCopy, encoder);
+
+    /// <summary>
+    /// Hands the marked copy's encoder to exactly one caller - whichever of stopping the night or
+    /// a failed write gets there first - so it is never finished and thrown away at the same time.
+    /// </summary>
+    public FfmpegEncoder? TakeMarkedCopy() => Interlocked.Exchange(ref _markedCopy, null);
+
+    public static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+
     public RecordingSession(TimelapseManifest manifest, FfmpegEncoder encoder, string folder,
         string ffmpegPath, int width, int height)
     {
@@ -768,7 +949,7 @@ internal sealed class RecordingSession
         }
     }
 
-    public void WritePoster(byte[] rgb, int width, int height)
+    public void WritePoster(byte[] rgb, int width, int height, string? fileName = null)
     {
         try
         {
@@ -778,9 +959,10 @@ internal sealed class RecordingSession
             var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = 82 };
             encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(source));
 
-            var tmp = Path.Combine(Folder, Manifest.PosterFile + ".tmp");
+            var name = fileName ?? Manifest.PosterFile;
+            var tmp = Path.Combine(Folder, name + ".tmp");
             using (var fs = File.Create(tmp)) encoder.Save(fs);
-            File.Move(tmp, Path.Combine(Folder, Manifest.PosterFile), overwrite: true);
+            File.Move(tmp, Path.Combine(Folder, name), overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or NotSupportedException or UnauthorizedAccessException)
         {

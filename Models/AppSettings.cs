@@ -258,6 +258,47 @@ internal sealed class HousekeepingSettings
     public DateTime? LastRun { get; set; }
 }
 
+/// <summary>
+/// The marker showing where the telescope is pointing. Off by default: it needs N.I.N.A. and a
+/// calibration, and a feature that has neither must not appear to do anything.
+/// </summary>
+internal sealed class TargetMarkerSettings
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>Draw it into the recorded video too, not only the live view.</summary>
+    public bool BurnIntoRecordings { get; set; }
+
+    /// <summary>
+    /// With burn-in on, record the night twice: the normal video stays clean and a second copy
+    /// carries the marker. Both are encoded from the same frames as they are captured.
+    /// </summary>
+    public bool KeepUnmarkedOriginal { get; set; }
+
+    /// <summary>Where N.I.N.A.'s Advanced API plugin listens. Only the address is configurable.</summary>
+    public string NinaApiUrl { get; set; } = "http://localhost:1888";
+
+    public LensCalibrationRecord? Calibration { get; set; }
+}
+
+/// <summary>What the automatic calibration found, and where it came from.</summary>
+internal sealed class LensCalibrationRecord
+{
+    public PierCam.Sky.LensModel Lens { get; set; } = new();
+    public DateTime CalibratedUtc { get; set; }
+
+    /// <summary>What it was calibrated from, for the status line: "Fri 18 Sep night" or "tonight's sky".</summary>
+    public string Source { get; set; } = string.Empty;
+
+    /// <summary>A second night the result was checked against, if there was one.</summary>
+    public string? ConfirmedOn { get; set; }
+
+    /// <summary>The camera it belongs to. Another camera, or this one on another frame size, needs its own.</summary>
+    public string CameraSerial { get; set; } = string.Empty;
+    public int Stars { get; set; }
+    public double RmsPx { get; set; }
+}
+
 internal enum LibraryView
 {
     /// <summary>Fanned horizontal stack, one night in focus.</summary>
@@ -322,6 +363,7 @@ internal sealed class AppSettings
     public StartupSettings Startup { get; set; } = new();
     public WindowPlacement Placement { get; set; } = new();
     public HousekeepingSettings Housekeeping { get; set; } = new();
+    public TargetMarkerSettings TargetMarker { get; set; } = new();
 
     public static string DefaultLibraryRoot() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PierCam");

@@ -35,6 +35,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Bright stars for the target marker's automatic calibration (44 KB, loaded only while calibrating). -->
+    <EmbeddedResource Include="Sky\bright-stars.csv" LogicalName="PierCam.Sky.bright-stars.csv" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- ffmpeg ships beside the exe; the encoder also falls back to PATH.
 
          ExcludeFromSingleFile matters more than it looks. A single-file publish otherwise

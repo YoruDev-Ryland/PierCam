@@ -36,6 +36,7 @@ public partial class MainWindow : Window
 {
     private readonly AppSettings _settings;
     private readonly CaptureEngine _engine;
+    private readonly Sky.TargetMarkerService _marker;
     private readonly LibraryStore _library = new();
     private readonly NightlyScheduler _scheduler;
     private readonly RoofMonitor _roof = new();
@@ -68,6 +69,11 @@ public partial class MainWindow : Window
 
         _settings = AppSettings.Load();
         _engine = new CaptureEngine(_settings);
+        _marker = new Sky.TargetMarkerService(_settings,
+            () => (_engine.CameraSerial, _engine.Width, _engine.Height),
+            a => Dispatcher.BeginInvoke(a, DispatcherPriority.Background));
+        _marker.StatusChanged += () => Dispatcher.BeginInvoke((Action)UpdateMarkerUi, DispatcherPriority.Background);
+        _engine.Marker = _marker;
         _scheduler = new NightlyScheduler(_settings, () => _roof.Status);
         _engine.SessionFinished += OnSessionFinished;
         ApplyRoofSettings();
@@ -136,6 +142,11 @@ public partial class MainWindow : Window
 
         NavLive.IsChecked = true;
         RescanCameras(autoConnect: true);
+
+        // Target marker: does nothing at all unless switched on.
+        UpdateMarkerColor();
+        _marker.Apply();
+        UpdateMarkerUi();
 
         _renderTimer.Start();
         _statusTimer.Start();
@@ -378,6 +389,7 @@ public partial class MainWindow : Window
         LoadAdvancedIntoUi();
         LoadStartupIntoUi();
         LoadHousekeepingIntoUi();
+        LoadMarkerIntoUi();
         UpdateSliderLabels();
         UpdateScheduleUi();
         UpdateAutoExposureHint();
@@ -858,6 +870,7 @@ public partial class MainWindow : Window
         _settings.ThemeId = ThemeManager.Resolve(id).Id;
         ThemeManager.Apply(_settings.ThemeId);
         _settings.Save();
+        UpdateMarkerColor();
 
         // The palette can be changed from the header dropdown or from the config chips; keep
         // both in step whichever one was used, without letting the sync re-trigger the handlers.
@@ -2381,8 +2394,9 @@ public partial class MainWindow : Window
                 confirmText: "DELETE", danger: true))
             return;
 
-        if (_pendingVideoPath is not null &&
-            item.VideoPath.Equals(_pendingVideoPath, StringComparison.OrdinalIgnoreCase))
+        // By folder, not video: either of a night's two videos may be the one playing.
+        if (_pendingVideoPath is not null && _playingItem is not null &&
+            item.FolderPath.Equals(_playingItem.FolderPath, StringComparison.OrdinalIgnoreCase))
             ClosePlayer();
 
         if (_library.Delete(item, out var error)) RefreshLibrary();
@@ -2465,8 +2479,32 @@ public partial class MainWindow : Window
 
     private void OnPlayTimelapse(object sender, RoutedEventArgs e)
     {
-        if (ItemFrom(sender) is not { } item) return;
-        if (!item.VideoExists)
+        if (ItemFrom(sender) is { } item) PlayItem(item);
+    }
+
+    /// <summary>The night the player has open, so its dots can swap the video in place.</summary>
+    private TimelapseItem? _playingItem;
+
+    private void OnShowOriginal(object sender, RoutedEventArgs e) => ShowVariant(sender, marked: false);
+    private void OnShowMarked(object sender, RoutedEventArgs e) => ShowVariant(sender, marked: true);
+
+    /// <summary>
+    /// Switches a night between its clean video and its marked copy. If that night is playing, the
+    /// other video takes over at the same moment, paused or playing as it was.
+    /// </summary>
+    private void ShowVariant(object sender, bool marked)
+    {
+        if (ItemFrom(sender) is not { } item || item.ShowMarked == marked) return;
+        item.ShowMarked = marked;
+        if (ReferenceEquals(item, _playingItem) && _player is { IsOpen: true } player
+            && PlayerPanel.Visibility == Visibility.Visible)
+            PlayItem(item, player.Progress, player.IsPlaying);
+    }
+
+    private void PlayItem(TimelapseItem item, double startAt = 0, bool play = true)
+    {
+        var path = item.PlayPath;
+        if (!File.Exists(path))
         {
             MessageBox.Show(this, "The video file is missing from this folder.", "Nothing to play",
                 MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2478,7 +2516,7 @@ public partial class MainWindow : Window
         {
             // No decoder, so no in-app playback. Hand it to whatever plays MP4 instead of
             // pretending the button did nothing.
-            OpenInShell(item.VideoPath);
+            OpenInShell(path);
             return;
         }
 
@@ -2487,25 +2525,28 @@ public partial class MainWindow : Window
         {
             _player ??= new FramePlayer(ffmpeg);
             _player.Speed = Selected(SpeedCombo, 1.0);
-            _player.Open(item.VideoPath, m.Width, m.Height, m.FrameCount, m.Fps);
+            _player.Open(path, m.Width, m.Height, m.FrameCount, m.Fps);
+            if (startAt > 0) _player.SeekTo(startAt);
+            if (!play) _player.Pause();
         }
         catch (Exception ex)
         {
             App.Log(ex, "OpenPlayer");
-            OpenInShell(item.VideoPath);
+            OpenInShell(path);
             return;
         }
 
-        _pendingVideoPath = item.VideoPath;
+        _playingItem = item;
+        _pendingVideoPath = path;
         // The bitmap is kept between clips and only rebuilt when the decode size changes, so
         // flicking through the library does not allocate a new one per night.
         _playerRendered = -1;
         _playerAspect = m.Width > 0 && m.Height > 0 ? m.Width / (double)m.Height : 16.0 / 9.0;
         PlayerStatus.Text = "DECODING…";
         PlayerTitle.Text = item.Title.ToUpperInvariant();
-        PlayerCode.Text = $"{m.FrameCount:N0}F · {m.Fps:0}FPS";
-        PlayPauseButton.Content = "❚❚";
-        PlayerSeek.Value = 0;
+        PlayerCode.Text = $"{m.FrameCount:N0}F · {m.Fps:0}FPS" + (item.ShowMarked ? " · MARKED" : "");
+        PlayPauseButton.Content = play ? "❚❚" : "▶";
+        PlayerSeek.Value = startAt;
 
         OpenPlayerStage();
         StartPlayerRendering();
@@ -2658,6 +2699,7 @@ public partial class MainWindow : Window
         StopPlayerRendering();
         _player?.Close();
         _pendingVideoPath = null;
+        _playingItem = null;
 
         SetLibraryCompact(false);
 
@@ -3097,8 +3139,76 @@ public partial class MainWindow : Window
         _player?.Dispose();
         _player = null;
 
+        // The marker first: once the engine no longer calls into it, it can shut down its threads.
+        _engine.Marker = null;
         _engine.StopRecording("PierCam closed");
         _engine.Dispose();
+        _marker.Dispose();
         _settings.Save();
+    }
+
+    // ══════════════════════ target marker ══════════════════════
+
+    private void LoadMarkerIntoUi()
+    {
+        var m = _settings.TargetMarker;
+        MarkerEnabledCheck.IsChecked = m.Enabled;
+        MarkerBurnCheck.IsChecked = m.BurnIntoRecordings;
+        MarkerKeepOriginalCheck.IsChecked = m.KeepUnmarkedOriginal;
+        MarkerApiBox.Text = m.NinaApiUrl;
+    }
+
+    private void OnMarkerSettingsChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        var m = _settings.TargetMarker;
+        var wasEnabled = m.Enabled;
+        var url = MarkerApiBox.Text.Trim();
+        if (url.Length == 0) { url = new Models.TargetMarkerSettings().NinaApiUrl; MarkerApiBox.Text = url; }
+
+        m.Enabled = MarkerEnabledCheck.IsChecked == true;
+        m.BurnIntoRecordings = MarkerBurnCheck.IsChecked == true;
+        m.KeepUnmarkedOriginal = MarkerKeepOriginalCheck.IsChecked == true;
+        m.NinaApiUrl = url;
+        _settings.Save();
+
+        if (m.Enabled != wasEnabled) _marker.Apply();
+        UpdateMarkerUi();
+    }
+
+    private void OnMarkerRecalibrate(object sender, RoutedEventArgs e)
+    {
+        _marker.Recalibrate();
+        UpdateMarkerUi();
+    }
+
+    /// <summary>The marker is drawn in the palette's accent, so it matches the rest of the app.</summary>
+    private void UpdateMarkerColor()
+    {
+        if (TryFindResource("Accent") is SolidColorBrush b) _marker.SetColor(b.Color.R, b.Color.G, b.Color.B);
+    }
+
+    private void UpdateMarkerUi()
+    {
+        var phase = _marker.Phase;
+        MarkerHeadline.Text = _marker.Headline;
+        MarkerDetail.Text = _marker.Detail;
+        MarkerDetail.Visibility = string.IsNullOrEmpty(_marker.Detail) ? Visibility.Collapsed : Visibility.Visible;
+        var telescope = _marker.TelescopeLine;
+        MarkerTelescope.Text = telescope;
+        MarkerTelescope.Visibility = telescope.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        MarkerLed.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, phase switch
+        {
+            Sky.MarkerPhase.Calibrated => "Signal",
+            Sky.MarkerPhase.Searching or Sky.MarkerPhase.Calibrating or Sky.MarkerPhase.Collecting => "Accent",
+            Sky.MarkerPhase.WaitingForNight or Sky.MarkerPhase.NeedsSite => "Warn",
+            _ => "TextFaint",
+        });
+        var on = _settings.TargetMarker.Enabled;
+        MarkerBurnCheck.IsEnabled = on;
+        // Only means something with burn-in on. Like burn-in, it applies from the next recording.
+        MarkerKeepOriginalCheck.IsEnabled = on && _settings.TargetMarker.BurnIntoRecordings;
+        MarkerRecalibrateButton.IsEnabled = on && _settings.Site.IsSet
+                                             && phase is not (Sky.MarkerPhase.Searching or Sky.MarkerPhase.Calibrating);
     }
 }

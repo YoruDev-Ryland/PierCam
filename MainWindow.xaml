@@ -19,6 +19,47 @@
     </shell:WindowChrome.WindowChrome>
 
     <Window.Resources>
+        <!-- A night recorded twice - clean and with the target marker burned in - shows one dot per
+             video along the foot of its poster. The filled dot is the one the card shows and plays;
+             clicking the other switches to it. A generous transparent hit area around a small dot. -->
+        <Style x:Key="VariantDot" TargetType="Button">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid Background="Transparent" Width="20" Height="18">
+                            <Ellipse x:Name="dot" Width="8" Height="8" StrokeThickness="1.5"
+                                     Stroke="{DynamicResource Accent}" Fill="{TemplateBinding Background}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="dot" Property="Width" Value="10"/>
+                                <Setter TargetName="dot" Property="Height" Value="10"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="VariantDotOriginal" TargetType="Button" BasedOn="{StaticResource VariantDot}">
+            <Setter Property="ToolTip" Value="Original"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding ShowMarked}" Value="False">
+                    <Setter Property="Background" Value="{DynamicResource Accent}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="VariantDotMarked" TargetType="Button" BasedOn="{StaticResource VariantDot}">
+            <Setter Property="ToolTip" Value="With the target marker"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding ShowMarked}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource Accent}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- One card definition, used by both the grid and the carousel. Keeping a single
              template means the two views can never drift apart. Event handlers resolve
              against this window, which is why it lives here rather than in a theme file. -->
@@ -59,6 +100,15 @@
                                    VerticalAlignment="Top" Margin="14,13,14,0"
                                    Foreground="#FFFFFFFF" Opacity="0.55"
                                    FontSize="10" FontWeight="Bold"/>
+
+                        <Border HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,10"
+                                Background="#B0000000" Padding="4,1"
+                                Visibility="{Binding HasMarkedCopy, Converter={StaticResource BoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{StaticResource VariantDotOriginal}" Click="OnShowOriginal" Tag="{Binding}"/>
+                                <Button Style="{StaticResource VariantDotMarked}" Click="OnShowMarked" Tag="{Binding}"/>
+                            </StackPanel>
+                        </Border>
                     </Grid>
 
                     <Rectangle Height="1" Fill="{DynamicResource Hairline}"/>
@@ -117,7 +167,19 @@
                                     Background="#FF000000" Stroke="{DynamicResource HairlineSoft}"
                                     Chamfer="{DynamicResource ChamferSmall}" Corners="Diagonal"
                                     ClipContent="True" Margin="0,0,11,0" VerticalAlignment="Center">
-                        <Image Source="{Binding Poster}" Stretch="UniformToFill"/>
+                        <Grid>
+                            <Image Source="{Binding Poster}" Stretch="UniformToFill"/>
+                            <!-- The same switch as the full card; with the player open it swaps the
+                                 playing video in place. -->
+                            <Border HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,3"
+                                    Background="#B0000000" Padding="2,0"
+                                    Visibility="{Binding HasMarkedCopy, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Style="{StaticResource VariantDotOriginal}" Click="OnShowOriginal" Tag="{Binding}"/>
+                                    <Button Style="{StaticResource VariantDotMarked}" Click="OnShowMarked" Tag="{Binding}"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
                     </c:ChamferPanel>
 
                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,10,0">
@@ -1029,6 +1091,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <!-- 01 · APPEARANCE. Top-left corner of the assembly. Its right edge is set
@@ -1493,12 +1556,77 @@
                         </StackPanel>
                     </c:ChamferPanel>
 
-                    <!-- 07 · DIAGNOSTICS. Bottom rail. Drawn 36px up so its top-left corner
-                         forms the triangle that AUTO-EXPOSURE's cut leaves — the mirror of
-                         Cuts="0,0,0,36" above it. Bottom-right cut 64 closes the assembly. -->
-                    <c:ChamferPanel x:Name="PlateDiag" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="3"
+                    <!-- 07 · TARGET MARKER. Full-width rail under the tuning row. Drawn 36px up
+                         so its top-left corner forms the triangle AUTO-EXPOSURE's cut leaves - the
+                         mirror of Cuts="0,0,0,36" above it. Butts square against DIAGNOSTICS below. -->
+                    <c:ChamferPanel x:Name="PlateMarker" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="3"
                                     Style="{StaticResource Plate}" Margin="0,-36,0,0"
-                                    TopEdge="0>36@0" Cuts="0,0,64,28" Padding="20,40,20,18">
+                                    TopEdge="0>36@0" Padding="20,40,20,20">
+                        <StackPanel>
+                            <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock Text="TARGET MARKER" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <TextBlock Text="07 / SKY" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextFaint}"/>
+                            </HeaderedContentControl>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.1*"/>
+                                    <ColumnDefinition Width="28"/>
+                                    <ColumnDefinition Width="1.3*"/>
+                                    <ColumnDefinition Width="28"/>
+                                    <ColumnDefinition Width="1*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- The switches. -->
+                                <StackPanel Grid.Column="0">
+                                    <CheckBox x:Name="MarkerEnabledCheck" Content="MARK THE TELESCOPE'S TARGET"
+                                              Checked="OnMarkerSettingsChanged" Unchecked="OnMarkerSettingsChanged"/>
+                                    <CheckBox x:Name="MarkerBurnCheck" Content="ALSO BURN IT INTO RECORDINGS"
+                                              Checked="OnMarkerSettingsChanged" Unchecked="OnMarkerSettingsChanged"/>
+                                    <CheckBox x:Name="MarkerKeepOriginalCheck" Content="KEEP A CLEAN COPY TOO" Margin="22,0,0,0"
+                                              ToolTip="Records the night twice: a clean video and one with the marker. Switch between them with the dots on the library card."
+                                              Checked="OnMarkerSettingsChanged" Unchecked="OnMarkerSettingsChanged"/>
+                                    <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,8,0,0"
+                                               Text="A ring on the pier cam view at the telescope's target, whenever it is in view. The camera calibrates itself from the stars."/>
+                                </StackPanel>
+                                <Rectangle Grid.Column="1" Width="1" HorizontalAlignment="Center"
+                                           Fill="{DynamicResource HairlineSoft}" Margin="0,2"/>
+
+                                <!-- Calibration status: live, as it works. -->
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="CALIBRATION" Style="{StaticResource FieldLabel}"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                        <Ellipse x:Name="MarkerLed" Width="7" Height="7" VerticalAlignment="Center"
+                                                 Fill="{DynamicResource TextFaint}" Margin="0,0,9,0"/>
+                                        <TextBlock x:Name="MarkerHeadline" Style="{StaticResource Readout}" Text="Off"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                    <TextBlock x:Name="MarkerDetail" Style="{StaticResource FieldLabel}" TextWrapping="Wrap"
+                                               Margin="16,6,0,0" LineHeight="17"/>
+                                    <Button x:Name="MarkerRecalibrateButton" Content="RECALIBRATE" HorizontalAlignment="Left"
+                                            Margin="16,12,0,0" Click="OnMarkerRecalibrate"/>
+                                </StackPanel>
+                                <Rectangle Grid.Column="3" Width="1" HorizontalAlignment="Center"
+                                           Fill="{DynamicResource HairlineSoft}" Margin="0,2"/>
+
+                                <!-- Where the telescope's position comes from. -->
+                                <StackPanel Grid.Column="4">
+                                    <TextBlock Text="N.I.N.A. ADVANCED API" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="MarkerApiBox" LostFocus="OnMarkerSettingsChanged" Margin="0,0,0,8"/>
+                                    <TextBlock x:Name="MarkerTelescope" Style="{StaticResource FieldLabel}" TextWrapping="Wrap"
+                                               LineHeight="17"/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </c:ChamferPanel>
+
+                    <!-- 08 · DIAGNOSTICS. Bottom rail, square against TARGET MARKER above.
+                         Bottom-right cut 64 closes the assembly. -->
+                    <c:ChamferPanel x:Name="PlateDiag" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3"
+                                    Style="{StaticResource Plate}"
+                                    Cuts="0,0,64,28" Padding="20,18,20,18">
                         <!-- Two arrangements, switched by FitDiagnostics on the window width.
                              Wide: facts | paths | buttons across. Narrow: facts, then paths,
                              then the buttons wrapped underneath. The paths never wrap — a long
@@ -1520,7 +1648,7 @@
                                     <HeaderedContentControl.Header>
                                         <TextBlock Text="DIAGNOSTICS" Style="{StaticResource PlateTitle}"/>
                                     </HeaderedContentControl.Header>
-                                    <TextBlock Text="07 / SYS" Style="{StaticResource Label}"
+                                    <TextBlock Text="08 / SYS" Style="{StaticResource Label}"
                                                Foreground="{DynamicResource TextFaint}"/>
                                 </HeaderedContentControl>
                                 <Grid>

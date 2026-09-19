@@ -99,11 +99,14 @@ internal sealed class VideoTranscoder
 
             var before = new FileInfo(m.VideoPath).Length;
             var tempPath = Path.Combine(m.FolderPath, "timelapse.downscale.mp4");
+            // A night with a marked copy has two videos to reduce; each takes half the progress bar.
+            var markedPath = m.MarkedVideoPath is { } mp && File.Exists(mp) ? mp : null;
+            var share = markedPath is null ? 1.0 : 0.5;
 
             try
             {
                 var ok = await RunFfmpegAsync(m.VideoPath, tempPath, target, crf, m.FrameCount,
-                    f => Report(f), ct).ConfigureAwait(false);
+                    f => Report(f * share), ct).ConfigureAwait(false);
 
                 if (!ok || !File.Exists(tempPath) || new FileInfo(tempPath).Length < 1024)
                 {
@@ -127,8 +130,6 @@ internal sealed class VideoTranscoder
                 m.Height = target.Height;
                 m.VideoBytes = after;
                 m.Save(m.FolderPath);
-
-                Report(1);
             }
             catch (OperationCanceledException)
             {
@@ -140,7 +141,41 @@ internal sealed class VideoTranscoder
             {
                 TryDelete(tempPath);
                 Report(1, ex.Message);
+                continue;
             }
+
+            // The marked copy follows the clean video down, so the pair stays the same size. If it
+            // alone fails it is left as it was: still a playable video, just larger.
+            if (markedPath is not null)
+            {
+                var markedTemp = Path.Combine(m.FolderPath, "timelapse-marked.downscale.mp4");
+                try
+                {
+                    var markedBefore = new FileInfo(markedPath).Length;
+                    var markedOk = await RunFfmpegAsync(markedPath, markedTemp, target, crf, m.FrameCount,
+                        f => Report(0.5 + f * 0.5), ct).ConfigureAwait(false);
+                    if (markedOk && File.Exists(markedTemp) && new FileInfo(markedTemp).Length >= 1024)
+                    {
+                        File.Move(markedTemp, markedPath, overwrite: true);
+                        m.MarkedVideoBytes = new FileInfo(markedPath).Length;
+                        totalSaved += Math.Max(0, markedBefore - m.MarkedVideoBytes);
+                        m.Save(m.FolderPath);
+                    }
+                    else TryDelete(markedTemp);
+                }
+                catch (OperationCanceledException)
+                {
+                    TryDelete(markedTemp);
+                    throw;
+                }
+                catch (Exception ex) when (ex is IOException or InvalidOperationException
+                                           or System.ComponentModel.Win32Exception)
+                {
+                    TryDelete(markedTemp);
+                }
+            }
+
+            Report(1);
         }
 
         progress.Report(new TranscodeProgress

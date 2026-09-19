@@ -41,6 +41,10 @@ what it removes is noise rather than detail.
   then holds and resumes into the *same* file if it reopens. One night, one video.
 - **Auto-exposure ramp** for twilight, and an auto-stretch that cancels light-pollution cast and
   follows the sky slowly rather than flickering frame to frame.
+- **Target marker.** A ring on the pier cam view where the telescope is pointing, read live from
+  N.I.N.A.'s Advanced API. The camera calibrates itself from the stars in nights it has already
+  recorded, with no manual star-picking. Optionally burned into recordings, with a clean copy
+  kept alongside.
 - **Library** with a carousel and a grid, in-app playback, and batch downscaling of old nights.
 - **Built to stay light.** Nothing allocates per frame, no frame history, one reused bitmap. The
   status bar shows live memory and uptime so you can check rather than take my word for it.

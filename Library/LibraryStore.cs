@@ -15,11 +15,39 @@ namespace PierCam.Library;
 internal sealed class TimelapseItem : INotifyPropertyChanged
 {
     private ImageSource? _poster;
+    private ImageSource? _markedPoster;
     private bool _isSelected;
+    private bool _showMarked;
 
     public TimelapseManifest Manifest { get; }
 
-    public TimelapseItem(TimelapseManifest manifest) => Manifest = manifest;
+    public TimelapseItem(TimelapseManifest manifest)
+    {
+        Manifest = manifest;
+        HasMarkedCopy = manifest.MarkedVideoPath is { } marked && File.Exists(marked);
+    }
+
+    /// <summary>The night was also recorded with the target marker burned in.</summary>
+    public bool HasMarkedCopy { get; private set; }
+
+    /// <summary>
+    /// Which of the night's two videos the card shows and plays. Only meaningful with a marked
+    /// copy; the card's dots switch it.
+    /// </summary>
+    public bool ShowMarked
+    {
+        get => _showMarked && HasMarkedCopy;
+        set
+        {
+            if (_showMarked == value) return;
+            _showMarked = value;
+            Raise();
+            Raise(nameof(Poster));
+        }
+    }
+
+    /// <summary>The video the card's PLAY opens: the marked copy when that is the one showing.</summary>
+    public string PlayPath => ShowMarked ? Manifest.MarkedVideoPath! : Manifest.VideoPath;
 
     /// <summary>Ticked in the library grid, for batch operations like downscaling.</summary>
     public bool IsSelected
@@ -77,7 +105,8 @@ internal sealed class TimelapseItem : INotifyPropertyChanged
             var saved = Manifest.EstimatedRawBytes > 0 && Manifest.VideoBytes > 0
                 ? $" · saved {Format.Bytes(Manifest.EstimatedRawBytes - Manifest.VideoBytes)} vs raw frames"
                 : string.Empty;
-            return Format.Bytes(Manifest.VideoBytes) + saved;
+            var marked = HasMarkedCopy ? $" + {Format.Bytes(Manifest.MarkedVideoBytes)} marked copy" : string.Empty;
+            return Format.Bytes(Manifest.VideoBytes) + marked + saved;
         }
     }
 
@@ -107,32 +136,39 @@ internal sealed class TimelapseItem : INotifyPropertyChanged
     {
         get
         {
-            if (_poster is not null) return _poster;
-            var path = Manifest.PosterPath;
-            if (!File.Exists(path)) return null;
-            try
-            {
-                var bmp = new BitmapImage();
-                bmp.BeginInit();
-                bmp.UriSource = new Uri(path);
-                bmp.DecodePixelWidth = 480;
-                bmp.CacheOption = BitmapCacheOption.OnLoad;
-                bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-                bmp.EndInit();
-                bmp.Freeze();
-                _poster = bmp;
-            }
-            catch (Exception ex) when (ex is IOException or NotSupportedException or UriFormatException)
-            {
-                return null;
-            }
-            return _poster;
+            // The marked copy's own poster when it is the one showing; the clean one otherwise,
+            // or if the marked poster is missing.
+            if (ShowMarked && Manifest.MarkedPosterPath is { } marked && (_markedPoster ??= LoadPoster(marked)) is { } m)
+                return m;
+            return _poster ??= LoadPoster(Manifest.PosterPath);
+        }
+    }
+
+    private static ImageSource? LoadPoster(string path)
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.UriSource = new Uri(path);
+            bmp.DecodePixelWidth = 480;
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            bmp.EndInit();
+            bmp.Freeze();
+            return bmp;
+        }
+        catch (Exception ex) when (ex is IOException or NotSupportedException or UriFormatException)
+        {
+            return null;
         }
     }
 
     public void InvalidatePoster()
     {
         _poster = null;
+        _markedPoster = null;
         Raise(nameof(Poster));
     }
 
@@ -226,7 +262,7 @@ internal sealed class LibraryStore
         for (var i = 0; i < Items.Count; i++)
             Items[i].IndexLabel = (i + 1).ToString("D2") + " / " + Items.Count.ToString("D2");
 
-        TotalVideoBytes = found.Sum(f => f.VideoBytes);
+        TotalVideoBytes = found.Sum(f => f.VideoBytes + (f.MarkedVideoFile is null ? 0 : f.MarkedVideoBytes));
         TotalEstimatedRawBytes = found.Sum(f => f.EstimatedRawBytes);
     }
 

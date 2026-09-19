@@ -43,7 +43,64 @@ internal static class TextOverlay
         ['s'] = new byte[] { 0b00000, 0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110 },
         ['°'] = new byte[] { 0b01100, 0b10010, 0b01100, 0b00000, 0b00000, 0b00000, 0b00000 },
         [' '] = new byte[] { 0, 0, 0, 0, 0, 0, 0 },
+
+        // The rest of the capitals, for the target marker's label.
+        ['A'] = new byte[] { 0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001 },
+        ['B'] = new byte[] { 0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110 },
+        ['D'] = new byte[] { 0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100 },
+        ['H'] = new byte[] { 0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001 },
+        ['I'] = new byte[] { 0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
+        ['J'] = new byte[] { 0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100 },
+        ['K'] = new byte[] { 0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001 },
+        ['L'] = new byte[] { 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111 },
+        ['M'] = new byte[] { 0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001 },
+        ['N'] = new byte[] { 0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001 },
+        ['O'] = new byte[] { 0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110 },
+        ['Q'] = new byte[] { 0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101 },
+        ['R'] = new byte[] { 0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001 },
+        ['T'] = new byte[] { 0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100 },
+        ['U'] = new byte[] { 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110 },
+        ['V'] = new byte[] { 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100 },
+        ['W'] = new byte[] { 0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010 },
+        ['Y'] = new byte[] { 0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100 },
+        ['Z'] = new byte[] { 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111 },
+        ['\''] = new byte[] { 0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000 },
+        ['('] = new byte[] { 0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010 },
+        [')'] = new byte[] { 0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000 },
     };
+
+    /// <summary>Pixel width and height of <paramref name="text"/> at <paramref name="scale"/>.</summary>
+    public static (int w, int h) Measure(string text, int scale) =>
+        (Math.Max(0, text.Length * (GlyphW + 1) * scale - scale), GlyphH * scale);
+
+    /// <summary>
+    /// The rectangle a bottom-left timestamp occupies, plate included - so star detection can
+    /// ignore it rather than mistake its digits for stars.
+    /// </summary>
+    public static (int x, int y, int w, int h) TimestampFootprint(int width, int height, int scale, int margin = 16)
+    {
+        var (tw, th) = Measure("0000-00-00 00:00:00", scale);
+        var pad = scale * 2;
+        return (0, Math.Max(0, height - margin - th - pad * 2), margin + tw + pad * 2 + 8, margin + th + pad * 2);
+    }
+
+    /// <summary>
+    /// Draws <paramref name="text"/> with its top-left at (x, y) in the given colour, over a
+    /// darkened plate. Clipped to the frame; unknown characters are skipped.
+    /// </summary>
+    public static void DrawAt(byte[] rgb, int width, int height, string text, int x, int y, int scale,
+        byte r, byte g, byte b, bool shadow = true)
+    {
+        if (string.IsNullOrEmpty(text) || scale < 1) return;
+        var (tw, th) = Measure(text, scale);
+        if (shadow) Darken(rgb, width, height, x - scale * 2, y - scale, tw + scale * 4, th + scale * 2);
+        var penX = x;
+        foreach (var ch in text)
+        {
+            if (Glyphs.TryGetValue(ch, out var glyph)) DrawGlyph(rgb, width, height, glyph, penX, y, scale, r, g, b);
+            penX += (GlyphW + 1) * scale;
+        }
+    }
 
     public enum Corner { TopLeft, TopRight, BottomLeft, BottomRight }
 
@@ -75,7 +132,8 @@ internal static class TextOverlay
         }
     }
 
-    private static void DrawGlyph(byte[] rgb, int width, int height, byte[] glyph, int x0, int y0, int scale)
+    private static void DrawGlyph(byte[] rgb, int width, int height, byte[] glyph, int x0, int y0, int scale,
+        byte cr = 235, byte cg = 235, byte cb = 235)
     {
         for (var gy = 0; gy < GlyphH; gy++)
         {
@@ -94,7 +152,7 @@ internal static class TextOverlay
                         var px = x0 + gx * scale + sx;
                         if ((uint)px >= (uint)width) continue;
                         var o = rowOff + px * 3;
-                        rgb[o] = 235; rgb[o + 1] = 235; rgb[o + 2] = 235;
+                        rgb[o] = cr; rgb[o + 1] = cg; rgb[o + 2] = cb;
                     }
                 }
             }

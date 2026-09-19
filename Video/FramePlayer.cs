@@ -167,6 +167,7 @@ internal sealed class FramePlayer : IDisposable
                 var stream = proc.StandardOutput.BaseStream;
                 var index = startFrame;
                 var nextDue = clock.Elapsed;
+                var shown = false;
 
                 while (!ct.IsCancellationRequested)
                 {
@@ -177,7 +178,15 @@ internal sealed class FramePlayer : IDisposable
                     if (!_playing)
                     {
                         // Paused: hold the last frame up and stop consuming. The pipe stays open,
-                        // so resuming costs nothing.
+                        // so resuming costs nothing. After a seek, or a switch to the night's other
+                        // video, the frame to hold is the one parked on, so decode that one first.
+                        if (!shown && ReadExactly(stream, reading, frameBytes, ct))
+                        {
+                            Present(reading);
+                            _frameIndex = index;
+                            index++;
+                        }
+                        shown = true;
                         ct.WaitHandle.WaitOne(30);
                         nextDue = clock.Elapsed;
                         continue;
@@ -194,6 +203,7 @@ internal sealed class FramePlayer : IDisposable
                     Present(reading);
                     _frameIndex = index;
                     index++;
+                    shown = true;
 
                     // Pace it. Decode runs far ahead of real time, so this is where the thread
                     // spends its life.
