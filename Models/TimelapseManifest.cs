@@ -71,7 +71,11 @@ internal sealed class TimelapseManifest
     private static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() }
+        Converters = { new JsonStringEnumConverter() },
+        // This is written while a night is recording, and Save has nothing around it to catch a
+        // failure. A non-finite exposure or temperature must not be able to throw out of the
+        // capture path, so it is written as "NaN" rather than refused.
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
     };
 
     public const string FileName = "session.json";

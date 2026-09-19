@@ -225,15 +225,19 @@ internal sealed class StartupSettings
 /// </summary>
 internal sealed class WindowPlacement
 {
-    public double Left { get; set; } = double.NaN;
-    public double Top { get; set; } = double.NaN;
-    public double Width { get; set; } = double.NaN;
-    public double Height { get; set; } = double.NaN;
+    // Zero means "never saved", not NaN. NaN was the obvious sentinel and a bad one: a settings
+    // object carrying it cannot be serialised at all. On a fresh install nothing has closed yet
+    // to fill these in, so every settings save threw until the first clean exit wrote real
+    // bounds - which is why restarting appeared to fix it. A saved window is always wider and
+    // taller than 100, so the size alone says whether this was ever set.
+    public double Left { get; set; }
+    public double Top { get; set; }
+    public double Width { get; set; }
+    public double Height { get; set; }
     public bool Maximised { get; set; }
 
     [JsonIgnore]
-    public bool IsSet => !double.IsNaN(Left) && !double.IsNaN(Top)
-                         && Width > 100 && Height > 100;
+    public bool IsSet => Width > 100 && Height > 100;
 }
 
 /// <summary>
@@ -330,7 +334,11 @@ internal sealed class AppSettings
     private static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() }
+        Converters = { new JsonStringEnumConverter() },
+        // By default a single NaN or infinity anywhere in the object makes Serialize throw, and
+        // every later save throws with it. Written as "NaN" and read back instead, one bad number
+        // costs one setting rather than the ability to save any setting at all.
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
     };
 
     public static string SettingsPath => Path.Combine(

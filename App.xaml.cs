@@ -30,13 +30,50 @@ public partial class App : Application
         base.OnStartup(e);
     }
 
+    private readonly System.Collections.Generic.HashSet<string> _shownErrors = new();
+    private bool _showingError;
+
     private void OnDispatcherException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         Log(e.Exception, "Dispatcher");
-        MessageBox.Show(
-            $"{e.Exception.Message}\n\nPierCam will keep running. Details were written to:\n{LogPath}",
-            "PierCam hit a problem", MessageBoxButton.OK, MessageBoxImage.Warning);
         e.Handled = true;
+
+        // Once per distinct failure per session. The log records every occurrence, but a fault
+        // that repeats on every click - a save that cannot succeed, say - must not become a
+        // dialog on every click. And never a second dialog over the first: showing one runs a
+        // nested message loop, which is exactly where the next occurrence would arrive.
+        var key = e.Exception.GetType().FullName + ": " + e.Exception.Message;
+        if (_showingError || !_shownErrors.Add(key)) return;
+
+        _showingError = true;
+        try
+        {
+            var message = $"{e.Exception.Message}\n\nPierCam will keep running. " +
+                          $"Details were written to:\n{LogPath}";
+
+            // The app's own dialog whenever there is a visible window to own it. A dialog owned
+            // by a minimised window is hidden along with it while still blocking input, and
+            // before the main window has been shown there is nothing to own it at all - in those
+            // cases the system box is the only thing that can actually appear.
+            if (MainWindow is { IsLoaded: true, IsVisible: true } owner &&
+                owner.WindowState != WindowState.Minimized)
+            {
+                Ui.Dialogs.Alert(owner, "PierCam hit a problem", message);
+            }
+            else
+            {
+                MessageBox.Show(message, "PierCam hit a problem",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log(ex, "ErrorDialog");
+        }
+        finally
+        {
+            _showingError = false;
+        }
     }
 
     public static void Log(Exception? ex, string source)
