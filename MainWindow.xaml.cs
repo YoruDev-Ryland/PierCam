@@ -39,6 +39,7 @@ public partial class MainWindow : Window
     private readonly Sky.TargetMarkerService _marker;
     private readonly LibraryStore _library = new();
     private readonly NightlyScheduler _scheduler;
+    private readonly Update.UpdateService _updates;
     private readonly RoofMonitor _roof = new();
     private readonly Process _self = Process.GetCurrentProcess();
     private readonly DateTime _startedAt = DateTime.Now;
@@ -75,6 +76,11 @@ public partial class MainWindow : Window
         _marker.StatusChanged += () => Dispatcher.BeginInvoke((Action)UpdateMarkerUi, DispatcherPriority.Background);
         _engine.Marker = _marker;
         _scheduler = new NightlyScheduler(_settings, () => _roof.Status);
+        _updates = new Update.UpdateService(_settings, () => _engine.IsRecording,
+            () => _scheduler.NextStart(DateTime.Now),
+            a => Dispatcher.BeginInvoke(a, DispatcherPriority.Background));
+        _updates.StatusChanged += UpdateUpdatesUi;
+        _updates.ExitRequested += Close;
         _engine.SessionFinished += OnSessionFinished;
         ApplyRoofSettings();
 
@@ -147,6 +153,11 @@ public partial class MainWindow : Window
         UpdateMarkerColor();
         _marker.Apply();
         UpdateMarkerUi();
+
+        // The first update check is ten seconds out, so it can never be in the way of the camera
+        // coming up.
+        _updates.Start();
+        UpdateUpdatesUi();
 
         _renderTimer.Start();
         _statusTimer.Start();
@@ -390,6 +401,7 @@ public partial class MainWindow : Window
         LoadStartupIntoUi();
         LoadHousekeepingIntoUi();
         LoadMarkerIntoUi();
+        LoadUpdatesIntoUi();
         UpdateSliderLabels();
         UpdateScheduleUi();
         UpdateAutoExposureHint();
@@ -3144,7 +3156,102 @@ public partial class MainWindow : Window
         _engine.StopRecording("PierCam closed");
         _engine.Dispose();
         _marker.Dispose();
+        _updates.Dispose();
         _settings.Save();
+    }
+
+    // ══════════════════════ updates ══════════════════════
+
+    private void LoadUpdatesIntoUi()
+    {
+        UpdateAutoCheck.IsChecked = _settings.Updates.CheckAutomatically;
+        UpdateAutoInstall.IsChecked = _settings.Updates.AutoInstallWhenIdle;
+    }
+
+    private void OnUpdateSettingsChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _settings.Updates.CheckAutomatically = UpdateAutoCheck.IsChecked == true;
+        _settings.Updates.AutoInstallWhenIdle = UpdateAutoInstall.IsChecked == true;
+        _settings.Save();
+        _updates.Apply();
+        UpdateUpdatesUi();
+    }
+
+    private async void OnCheckForUpdates(object sender, RoutedEventArgs e)
+    {
+        UpdateCheckButton.IsEnabled = false;
+        try { await _updates.CheckAsync(); }
+        finally { UpdateCheckButton.IsEnabled = true; }
+        UpdateUpdatesUi();
+    }
+
+    /// <summary>
+    /// Downloads if it has not already, then hands over to the installer. The confirmation is
+    /// worth having even though the button is disabled while recording: this closes the app, and
+    /// on a machine someone is watching remotely that should not be a surprise.
+    /// </summary>
+    private async void OnInstallUpdate(object sender, RoutedEventArgs e)
+    {
+        if (_updates.Available is not { } release) return;
+        if (!_updates.CanInstallNow(out var why))
+        {
+            MessageBox.Show(this, why, "Not now", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!Dialogs.Confirm(this, $"Install PierCam {release.Version.ToString(2)}",
+                $"PierCam will download {Library.Format.Bytes(release.Bytes)}, close, install the new version and reopen.\n\n" +
+                "The library and every setting are left alone.", confirmText: "INSTALL"))
+            return;
+
+        UpdateInstallButton.IsEnabled = false;
+        try
+        {
+            if (_updates.DownloadedInstaller is null && !await _updates.DownloadAsync()) return;
+            _updates.InstallAndRestart();
+        }
+        finally
+        {
+            UpdateInstallButton.IsEnabled = true;
+            UpdateUpdatesUi();
+        }
+    }
+
+    private void OnOpenReleasesPage(object sender, RoutedEventArgs e) =>
+        OpenInShell(_updates.Available?.PageUrl ?? Update.UpdateService.ReleasesPage);
+
+    private void OnStatusUpdateClicked(object sender, MouseButtonEventArgs e)
+    {
+        NavConfig.IsChecked = true;
+        Dispatcher.BeginInvoke(() => ConfigPage.ScrollToEnd(), DispatcherPriority.Loaded);
+    }
+
+    private void UpdateUpdatesUi()
+    {
+        UpdateHeadline.Text = _updates.Headline;
+        UpdateDetail.Text = _updates.Detail;
+        UpdateDetail.Visibility = _updates.Detail.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        UpdateAutoInstall.IsEnabled = _settings.Updates.CheckAutomatically && _updates.IsInstalled;
+
+        var offer = _updates.Available;
+        var installable = offer is not null && _updates.IsInstalled;
+        UpdateInstallButton.Visibility = installable ? Visibility.Visible : Visibility.Collapsed;
+        UpdateInstallButton.IsEnabled = installable && _updates.CanInstallNow(out _);
+        UpdatePageButton.Visibility = offer is not null && !installable ? Visibility.Visible : Visibility.Collapsed;
+
+        UpdateLed.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, _updates.Phase switch
+        {
+            Update.UpdatePhase.Available or Update.UpdatePhase.Ready or Update.UpdatePhase.Downloading => "Accent",
+            Update.UpdatePhase.UpToDate => "Signal",
+            Update.UpdatePhase.Failed => "Warn",
+            _ => "TextFaint",
+        });
+
+        // The badge in the status bar is the only part of this that appears anywhere but Config,
+        // and only when there is genuinely something newer.
+        StatusUpdate.Text = offer is null ? string.Empty : $"UPDATE {offer.Version.ToString(2)}";
+        StatusUpdate.Visibility = offer is null ? Visibility.Collapsed : Visibility.Visible;
+        FitStatusBar();
     }
 
     // ══════════════════════ target marker ══════════════════════

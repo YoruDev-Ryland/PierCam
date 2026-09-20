@@ -262,6 +262,26 @@ internal sealed class HousekeepingSettings
 /// The marker showing where the telescope is pointing. Off by default: it needs N.I.N.A. and a
 /// calibration, and a feature that has neither must not appear to do anything.
 /// </summary>
+/// <summary>Watching GitHub for a newer release. See <see cref="PierCam.Update.UpdateService"/>.</summary>
+internal sealed class UpdateSettings
+{
+    /// <summary>
+    /// Ask GitHub once a day whether there is a newer release. On by default: this is a free app
+    /// that people install and forget, and a fix nobody hears about helps nobody. The request
+    /// carries the version and nothing else, and a machine that cannot reach GitHub is unaffected.
+    /// </summary>
+    public bool CheckAutomatically { get; set; } = true;
+
+    /// <summary>
+    /// Install a new version on its own, but only while nothing is recording and no session is
+    /// due within the hour. Off by default: installing restarts PierCam, and on an unattended
+    /// camera that is a decision to make deliberately rather than inherit.
+    /// </summary>
+    public bool AutoInstallWhenIdle { get; set; }
+
+    public DateTime? LastCheckUtc { get; set; }
+}
+
 internal sealed class TargetMarkerSettings
 {
     public bool Enabled { get; set; }
@@ -364,6 +384,7 @@ internal sealed class AppSettings
     public WindowPlacement Placement { get; set; } = new();
     public HousekeepingSettings Housekeeping { get; set; } = new();
     public TargetMarkerSettings TargetMarker { get; set; } = new();
+    public UpdateSettings Updates { get; set; } = new();
 
     public static string DefaultLibraryRoot() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PierCam");

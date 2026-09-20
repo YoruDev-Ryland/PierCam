@@ -1671,6 +1671,38 @@
                                                ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
                                                Foreground="{DynamicResource TextFaint}"/>
                                 </Grid>
+                                <!-- Updates. Deliberately down here with the version and the log
+                                     rather than in a section of its own: it is something you look
+                                     at when you are already asking "what am I running?". -->
+                                <Rectangle Style="{StaticResource Divider}"/>
+                                <WrapPanel Orientation="Horizontal">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,18,8">
+                                        <Ellipse x:Name="UpdateLed" Width="7" Height="7" VerticalAlignment="Center"
+                                                 Fill="{DynamicResource TextFaint}" Margin="0,0,9,0"/>
+                                        <TextBlock x:Name="UpdateHeadline" Style="{StaticResource Readout}"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                    <Button x:Name="UpdateInstallButton" Content="INSTALL AND RESTART"
+                                            Style="{StaticResource BtnPrimary}" Visibility="Collapsed"
+                                            Margin="0,0,8,8" Click="OnInstallUpdate"/>
+                                    <!-- A zip copy cannot install over itself, so it gets the page
+                                         to download the new one from instead. -->
+                                    <Button x:Name="UpdatePageButton" Content="RELEASES PAGE" Visibility="Collapsed"
+                                            Margin="0,0,8,8" Click="OnOpenReleasesPage"/>
+                                    <Button x:Name="UpdateCheckButton" Content="CHECK NOW" Margin="0,0,18,8"
+                                            Click="OnCheckForUpdates"/>
+                                    <CheckBox x:Name="UpdateAutoCheck" Content="CHECK FOR UPDATES"
+                                              VerticalAlignment="Center" Margin="0,0,18,8"
+                                              ToolTip="Asks GitHub once a day whether there is a newer release."
+                                              Checked="OnUpdateSettingsChanged" Unchecked="OnUpdateSettingsChanged"/>
+                                    <CheckBox x:Name="UpdateAutoInstall" Content="INSTALL WHEN IDLE"
+                                              VerticalAlignment="Center" Margin="0,0,0,8"
+                                              ToolTip="Installs on its own, but never while recording or within an hour of a scheduled session."
+                                              Checked="OnUpdateSettingsChanged" Unchecked="OnUpdateSettingsChanged"/>
+                                </WrapPanel>
+                                <TextBlock x:Name="UpdateDetail" Style="{StaticResource FieldLabel}"
+                                           TextWrapping="Wrap" LineHeight="17" Margin="16,0,0,0"/>
+
                                 <!-- The tip jar, stamped at the foot of the plate like a maker's
                                      mark rather than banner-ed anywhere you have to look at it.
                                      The about box behind the wordmark says the same thing at
@@ -1741,6 +1773,12 @@
                                Text="KO-FI" Margin="18,0,0,0" VerticalAlignment="Center"
                                MouseLeftButtonUp="OnSupport"
                                ToolTip="Opens ko-fi.com in your browser"/>
+                    <!-- Only ever present when there is actually a newer version; clicking it
+                         goes to the update line in Config rather than installing anything. -->
+                    <TextBlock x:Name="StatusUpdate" Grid.Column="2" Style="{StaticResource LinkText}"
+                               Margin="18,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"
+                               MouseLeftButtonUp="OnStatusUpdateClicked"
+                               ToolTip="A newer version is available — opens Config"/>
                 </Grid>
                 <TextBlock x:Name="StatusRight" Grid.Column="2" Style="{StaticResource Label}"
                            Foreground="{DynamicResource TextFaint}" VerticalAlignment="Center"/>
