@@ -1188,7 +1188,8 @@
                                            Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
                             </StackPanel>
 
-                            <StackPanel Grid.Row="1" Margin="0,2,0,0">
+                            <!-- 18px down from the body's edge, the same as every plain plate's head. -->
+                            <StackPanel Grid.Row="1" Margin="0,18,0,0">
                                 <HeaderedContentControl Style="{StaticResource PlateHead}">
                                     <HeaderedContentControl.Header>
                                         <TextBlock Text="VIDEO OUTPUT" Style="{StaticResource PlateTitle}"/>
@@ -1373,10 +1374,11 @@
                         </StackPanel>
                     </c:ChamferPanel>
 
-                    <!-- 04 · AUTO-EXPOSURE. Its bottom-left corner is cut 36px; DIAGNOSTICS
-                         below rises into that triangle. Padding keeps the last field clear. -->
+                    <!-- 04 · AUTO-EXPOSURE. Its bottom edge is lifted 60px for the first 300px,
+                         where TARGET MARKER's title tab rises into it - the same joint as VIDEO's
+                         index tab in APPEARANCE, on the other side. Its fields end well above. -->
                     <c:ChamferPanel x:Name="PlateAE" Grid.Row="2" Grid.Column="0"
-                                    Style="{StaticResource Plate}" Cuts="0,0,0,36" Padding="20,18,20,24">
+                                    Style="{StaticResource Plate}" BottomEdge="60>0@150" Padding="20,18,20,24">
                         <StackPanel>
                             <HeaderedContentControl Style="{StaticResource PlateHead}">
                                 <HeaderedContentControl.Header>
@@ -1433,7 +1435,10 @@
                     </c:ChamferPanel>
 
                     <!-- 05 · IMAGE TUNING -->
-                    <c:ChamferPanel x:Name="PlateImage" Grid.Row="2" Grid.Column="1" Style="{StaticResource Plate}">
+                    <!-- Lifted fill, like SITE & ROOF. Three plates carry it across the assembly —
+                         top-right, centre, and the closing rail — and no two of them touch, so it
+                         reads as a mix of materials rather than a band. -->
+                    <c:ChamferPanel x:Name="PlateImage" Grid.Row="2" Grid.Column="1" Style="{StaticResource PlateAccent}">
                         <StackPanel>
                             <HeaderedContentControl Style="{StaticResource PlateHead}">
                                 <HeaderedContentControl.Header>
@@ -1556,21 +1561,40 @@
                         </StackPanel>
                     </c:ChamferPanel>
 
-                    <!-- 07 · TARGET MARKER. Full-width rail under the tuning row. Drawn 36px up
-                         so its top-left corner forms the triangle AUTO-EXPOSURE's cut leaves - the
-                         mirror of Cuts="0,0,0,36" above it. Butts square against DIAGNOSTICS below. -->
+                    <!-- 07 · TARGET MARKER. Full-width rail under the tuning row, drawn 60px up
+                         into AUTO-EXPOSURE's row; only the left 300px of that band is plate - the
+                         title tab - mirroring AUTO-EXPOSURE's lifted bottom edge. Its own bottom
+                         is lifted 48px at the right, where DIAGNOSTICS' index tab rises, so the
+                         bottom padding keeps the last line clear of that. -->
                     <c:ChamferPanel x:Name="PlateMarker" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="3"
-                                    Style="{StaticResource Plate}" Margin="0,-36,0,0"
-                                    TopEdge="0>36@0" Padding="20,40,20,20">
-                        <StackPanel>
-                            <HeaderedContentControl Style="{StaticResource PlateHead}">
+                                    Style="{StaticResource Plate}" Margin="0,-60,0,0"
+                                    TopEdge="0>60@150" BottomEdge="0>48@-320" Padding="20,0,20,56">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="60"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- The tab: index code and a strip, kept inside the raised 150px. That
+                                 width is what fits in the left column at the window's minimum
+                                 width; wider and the tab runs on into IMAGE TUNING's plate. -->
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center"
+                                        Margin="0,12,0,0">
+                                <TextBlock Text="07 / SKY" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextDim}" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                <c:BarCode Width="40" Height="12" Bars="10" Seed="21" VerticalAlignment="Center"/>
+                            </StackPanel>
+
+                            <!-- The head sits the same 18px below the body's edge as every plain plate's. -->
+                            <HeaderedContentControl Grid.Row="1" Style="{StaticResource PlateHead}" Margin="0,18,0,0">
                                 <HeaderedContentControl.Header>
                                     <TextBlock Text="TARGET MARKER" Style="{StaticResource PlateTitle}"/>
                                 </HeaderedContentControl.Header>
-                                <TextBlock Text="07 / SKY" Style="{StaticResource Label}"
-                                           Foreground="{DynamicResource TextFaint}"/>
+                                <TextBlock Text="" Style="{StaticResource Label}"/>
                             </HeaderedContentControl>
-                            <Grid>
+
+                            <Grid Grid.Row="2">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="1.1*"/>
                                     <ColumnDefinition Width="28"/>
@@ -1619,21 +1643,40 @@
                                                LineHeight="17"/>
                                 </StackPanel>
                             </Grid>
-                        </StackPanel>
+                        </Grid>
                     </c:ChamferPanel>
 
-                    <!-- 08 · DIAGNOSTICS. Bottom rail, square against TARGET MARKER above.
-                         Bottom-right cut 64 closes the assembly. -->
+                    <!-- 08 · DIAGNOSTICS. Bottom rail, drawn 48px up into TARGET MARKER's row;
+                         only the right 320px of that band is plate - the index tab - mirroring
+                         TARGET MARKER's lifted bottom edge, the way VIDEO OUTPUT sits under
+                         APPEARANCE. Bottom-right cut 64 closes the assembly. -->
                     <c:ChamferPanel x:Name="PlateDiag" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3"
-                                    Style="{StaticResource Plate}"
-                                    Cuts="0,0,64,28" Padding="20,18,20,18">
+                                    Style="{StaticResource PlateAccent}" Margin="0,-48,0,0"
+                                    TopEdge="48>0@-320" Cuts="0,0,64,28" Padding="20,0,20,18">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="48"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- The tab: index code and a strip, kept inside the raised 320px. -->
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right"
+                                        VerticalAlignment="Center" Margin="0,10,0,0">
+                                <c:HazardStripes Width="44" Height="9" StripeWidth="2" StripeGap="4"
+                                                 VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                <c:BarCode Width="40" Height="12" Bars="10" Seed="8"
+                                           VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                <TextBlock Text="08 / SYS" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
+                            </StackPanel>
+
                         <!-- Two arrangements, switched by FitDiagnostics on the window width.
                              Wide: facts | paths | buttons across. Narrow: facts, then paths,
                              then the buttons wrapped underneath. The paths never wrap — a long
                              path folding onto six lines is what used to make this plate tower
                              on a narrow window — they trim with an ellipsis and carry the full
                              text as a tooltip; COPY DIAGNOSTICS has them whole. -->
-                        <Grid>
+                        <Grid Grid.Row="1" Margin="0,18,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition x:Name="DiagGutter" Width="28"/>
@@ -1648,8 +1691,7 @@
                                     <HeaderedContentControl.Header>
                                         <TextBlock Text="DIAGNOSTICS" Style="{StaticResource PlateTitle}"/>
                                     </HeaderedContentControl.Header>
-                                    <TextBlock Text="08 / SYS" Style="{StaticResource Label}"
-                                               Foreground="{DynamicResource TextFaint}"/>
+                                    <TextBlock Text="" Style="{StaticResource Label}"/>
                                 </HeaderedContentControl>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
@@ -1734,6 +1776,7 @@
                                 <Button Content="RESTORE DEFAULTS" Style="{StaticResource BtnDanger}"
                                         Click="OnRestoreDefaults" Width="242" Margin="0,0,8,8"/>
                             </WrapPanel>
+                        </Grid>
                         </Grid>
                     </c:ChamferPanel>
                 </Grid>
