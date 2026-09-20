@@ -3217,6 +3217,10 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>Two sentences on one line, skipping either if it is empty.</summary>
+    private static string Join(string a, string b) =>
+        a.Length == 0 ? b : b.Length == 0 ? a : a + " " + b;
+
     private void OnOpenReleasesPage(object sender, RoutedEventArgs e) =>
         OpenInShell(_updates.Available?.PageUrl ?? Update.UpdateService.ReleasesPage);
 
@@ -3228,10 +3232,19 @@ public partial class MainWindow : Window
 
     private void UpdateUpdatesUi()
     {
+        // A copy running from a folder cannot install over itself, but the preference is still
+        // worth remembering — it takes effect the day this machine runs an installed copy. Saying
+        // so beats a greyed-out box with no explanation.
+        var folderCopy = !_updates.IsInstalled;
         UpdateHeadline.Text = _updates.Headline;
-        UpdateDetail.Text = _updates.Detail;
-        UpdateDetail.Visibility = _updates.Detail.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
-        UpdateAutoInstall.IsEnabled = _settings.Updates.CheckAutomatically && _updates.IsInstalled;
+        UpdateDetail.Text = folderCopy && _settings.Updates.AutoInstallWhenIdle
+            ? Join(_updates.Detail, "Installing on its own needs a copy put here by the installer; this one runs from a folder, so it will only ever point you at the download.")
+            : _updates.Detail;
+        UpdateDetail.Visibility = UpdateDetail.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        UpdateAutoInstall.IsEnabled = _settings.Updates.CheckAutomatically;
+        UpdateAutoInstall.ToolTip = folderCopy
+            ? "Remembered for an installed copy. This one runs from a folder, so it cannot install anything itself."
+            : "Installs on its own, but never while recording or within an hour of a scheduled session.";
 
         var offer = _updates.Available;
         var installable = offer is not null && _updates.IsInstalled;
