@@ -40,6 +40,7 @@ public partial class MainWindow : Window
     private readonly LibraryStore _library = new();
     private readonly NightlyScheduler _scheduler;
     private readonly Update.UpdateService _updates;
+    private readonly Net.DiscordPoster _discord;
     private readonly RoofMonitor _roof = new();
     private readonly Process _self = Process.GetCurrentProcess();
     private readonly DateTime _startedAt = DateTime.Now;
@@ -81,6 +82,9 @@ public partial class MainWindow : Window
             a => Dispatcher.BeginInvoke(a, DispatcherPriority.Background));
         _updates.StatusChanged += UpdateUpdatesUi;
         _updates.ExitRequested += Close;
+        _discord = new Net.DiscordPoster(_settings, FfmpegEncoder.Locate(_settings.FfmpegPath) ?? string.Empty);
+        _discord.StatusChanged += () => Dispatcher.BeginInvoke((Action)UpdateDiscordUi, DispatcherPriority.Background);
+        _engine.Discord = _discord;
         _engine.SessionFinished += OnSessionFinished;
         ApplyRoofSettings();
 
@@ -158,6 +162,9 @@ public partial class MainWindow : Window
         // coming up.
         _updates.Start();
         UpdateUpdatesUi();
+
+        _discord.Start();
+        UpdateDiscordUi();
 
         _renderTimer.Start();
         _statusTimer.Start();
@@ -402,6 +409,7 @@ public partial class MainWindow : Window
         LoadHousekeepingIntoUi();
         LoadMarkerIntoUi();
         LoadUpdatesIntoUi();
+        LoadDiscordIntoUi();
         UpdateSliderLabels();
         UpdateScheduleUi();
         UpdateAutoExposureHint();
@@ -1262,6 +1270,9 @@ public partial class MainWindow : Window
         {
             RefreshLibrary();
             UpdateStatusBar();
+            // The finished video, if a channel is set up for it. Queued, so a slow upload does
+            // not delay the library or the next night.
+            try { _discord.PostNight(manifest); } catch (Exception ex) { App.Log(ex, "Discord night"); }
             // A machine that is only ever on overnight would otherwise never reach a sweep.
             RunHousekeepingIfDue();
         });
@@ -1309,7 +1320,9 @@ public partial class MainWindow : Window
         if (_loading) return;
         _settings.Session.RoofStatusPath = RoofPathBox.Text.Trim();
         _settings.Session.RoofPollSeconds = ReadInt(RoofPollBox, _settings.Session.RoofPollSeconds, 5, 600);
-        _settings.Session.RoofAbandonMinutes = ReadInt(RoofStaleBox, _settings.Session.RoofAbandonMinutes, 1, 1440);
+        // Up to three days: the default is a day, and a box whose default sits on its own ceiling
+        // can only ever be turned down.
+        _settings.Session.RoofAbandonMinutes = ReadInt(RoofStaleBox, _settings.Session.RoofAbandonMinutes, 1, 4320);
         _settings.Session.RoofLingerMinutes = ReadInt(RoofLingerBox, _settings.Session.RoofLingerMinutes, 0, 120);
         RoofPollBox.Text = _settings.Session.RoofPollSeconds.ToString(CultureInfo.InvariantCulture);
         RoofStaleBox.Text = _settings.Session.RoofAbandonMinutes.ToString(CultureInfo.InvariantCulture);
@@ -1985,6 +1998,9 @@ public partial class MainWindow : Window
 
         // Items were replaced, so the old panel's event hook is gone with it.
         _flowHooked = false;
+
+        // "Send last night" turns on the moment the library has a night to send.
+        UpdateDiscordUi();
 
         var count = _library.Items.Count;
         LibraryCountText.Text = count switch
@@ -3154,10 +3170,152 @@ public partial class MainWindow : Window
         // The marker first: once the engine no longer calls into it, it can shut down its threads.
         _engine.Marker = null;
         _engine.StopRecording("PierCam closed");
+        _engine.Discord = null;
         _engine.Dispose();
         _marker.Dispose();
         _updates.Dispose();
+        _discord.Dispose();
         _settings.Save();
+    }
+
+    // ══════════════════════ discord ══════════════════════
+
+    /// <summary>
+    /// The real webhook URL. The box shows it masked unless it has focus: it is a password in
+    /// URL form, and a pier cam's config page is the sort of thing people screenshot.
+    /// </summary>
+    private string _discordUrl = string.Empty;
+
+    private void LoadDiscordIntoUi()
+    {
+        var d = _settings.Discord;
+        _discordUrl = d.WebhookUrl;
+        DiscordEnabledCheck.IsChecked = d.Enabled;
+        DiscordStillsCheck.IsChecked = d.PostStills;
+        DiscordVideoCheck.IsChecked = d.PostTimelapse;
+        DiscordShrinkCheck.IsChecked = d.ShrinkOversizeVideo;
+        DiscordEveryBox.Text = d.StillEveryMinutes.ToString(CultureInfo.InvariantCulture);
+        DiscordNameBox.Text = d.Username;
+        ShowDiscordUrlMasked();
+    }
+
+    private void ShowDiscordUrlMasked() =>
+        DiscordUrlBox.Text = _discordUrl.Length == 0 ? string.Empty : Net.DiscordPoster.Mask(_discordUrl);
+
+    private void OnDiscordUrlFocus(object sender, RoutedEventArgs e)
+    {
+        DiscordUrlBox.Text = _discordUrl;
+        DiscordUrlBox.SelectAll();
+    }
+
+    private void OnDiscordUrlBlur(object sender, RoutedEventArgs e)
+    {
+        var typed = DiscordUrlBox.Text.Trim();
+        // Leaving the mask untouched means "no change"; anything else is a new URL.
+        if (typed != Net.DiscordPoster.Mask(_discordUrl)) _discordUrl = typed;
+        ShowDiscordUrlMasked();
+        SaveDiscordSettings();
+    }
+
+    private void OnDiscordSettingsChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        SaveDiscordSettings();
+    }
+
+    private void SaveDiscordSettings()
+    {
+        if (_loading) return;
+        var d = _settings.Discord;
+        d.Enabled = DiscordEnabledCheck.IsChecked == true;
+        d.PostStills = DiscordStillsCheck.IsChecked == true;
+        d.PostTimelapse = DiscordVideoCheck.IsChecked == true;
+        d.ShrinkOversizeVideo = DiscordShrinkCheck.IsChecked == true;
+        d.WebhookUrl = _discordUrl;
+        d.StillEveryMinutes = ReadInt(DiscordEveryBox, d.StillEveryMinutes, 1, 720);
+        DiscordEveryBox.Text = d.StillEveryMinutes.ToString(CultureInfo.InvariantCulture);
+        var name = DiscordNameBox.Text.Trim();
+        d.Username = name.Length == 0 ? new Models.DiscordSettings().Username : name;
+        DiscordNameBox.Text = d.Username;
+        _settings.Save();
+        _discord.Apply();
+        UpdateDiscordUi();
+    }
+
+    private void OnDiscordTest(object sender, RoutedEventArgs e)
+    {
+        if (!ReadyToPost()) return;
+        _discord.PostTest();
+        UpdateDiscordUi();
+    }
+
+    /// <summary>The live view as it stands, posted on the spot rather than on the interval.</summary>
+    private void OnDiscordSendFrame(object sender, RoutedEventArgs e)
+    {
+        if (!ReadyToPost()) return;
+
+        int w = _engine.Width, h = _engine.Height;
+        var s = _engine.Status;
+        var sky = s.SkyLevel is { } level ? $" · sky {level * 100:0}%" : string.Empty;
+        var exposure = s.AutoExposureSeconds is { } secs
+            ? $"{secs:0.##}s @ gain {s.AutoExposureGain}"
+            : $"{_settings.Camera.PreviewExposureSeconds:0.##}s @ gain {_settings.Camera.PreviewGain}";
+        var title = s.RecordingTitle is { } recording ? $"**{recording}**" : "**Live view**";
+        var caption = $"{title} · {DateTime.Now:HH:mm} · {exposure}{sky}";
+
+        var sent = w > 0 && h > 0 && _engine.CopyLatestFrame(rgb => _discord.PostStillNow(rgb, w, h, caption));
+        if (!sent)
+            MessageBox.Show(this, "There is no frame to send yet — connect a camera and wait for the live view.",
+                "Nothing to send", MessageBoxButton.OK, MessageBoxImage.Information);
+        UpdateDiscordUi();
+    }
+
+    /// <summary>The newest finished timelapse in the library, posted on demand.</summary>
+    private void OnDiscordSendLastNight(object sender, RoutedEventArgs e)
+    {
+        if (!ReadyToPost()) return;
+        if (LastNight() is not { } item) return;
+        _discord.PostNight(item.Manifest, force: true);
+        UpdateDiscordUi();
+    }
+
+    /// <summary>The most recent night with a video still on disk, or null when the library is empty.</summary>
+    private TimelapseItem? LastNight() =>
+        _library.Items.FirstOrDefault(i => i.Manifest.FrameCount > 0 && i.VideoExists);
+
+    /// <summary>Saves what is on screen, and says where to find the URL if there is not one yet.</summary>
+    private bool ReadyToPost()
+    {
+        SaveDiscordSettings();
+        if (_discord.IsConfigured) return true;
+        MessageBox.Show(this,
+            "Paste the channel's webhook URL first — Discord → Server Settings → Integrations → Webhooks → Copy Webhook URL.",
+            "Nowhere to post", MessageBoxButton.OK, MessageBoxImage.Information);
+        return false;
+    }
+
+    private void UpdateDiscordUi()
+    {
+        var on = _settings.Discord.Enabled;
+        DiscordStillsCheck.IsEnabled = on;
+        DiscordVideoCheck.IsEnabled = on;
+        DiscordShrinkCheck.IsEnabled = on && _settings.Discord.PostTimelapse;
+        DiscordEveryBox.IsEnabled = on && _settings.Discord.PostStills;
+        DiscordNameBox.IsEnabled = on;
+        DiscordTestButton.IsEnabled = on;
+        DiscordFrameButton.IsEnabled = on && IsConnected;
+        // Nothing to send until a night has finished and its video is still there.
+        DiscordLastNightButton.IsEnabled = on && LastNight() is not null;
+
+        DiscordStatus.Text = _discord.Status;
+        DiscordStatus.Visibility = _discord.Status.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        DiscordLed.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, _discord.Phase switch
+        {
+            Net.DiscordPhase.Idle => "Signal",
+            Net.DiscordPhase.Working => "Accent",
+            Net.DiscordPhase.Failed => "Warn",
+            _ => "TextFaint",
+        });
     }
 
     // ══════════════════════ updates ══════════════════════

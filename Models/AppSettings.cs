@@ -183,8 +183,13 @@ internal sealed class SessionSettings
     /// carries a later one. A roof that sits open all night therefore has an hours-old file,
     /// and a short threshold here would refuse to record precisely on the good nights. This is
     /// the "something is genuinely broken" horizon, not a freshness check.
+    ///
+    /// A day, because the horizon has to outlast a night comfortably. At twelve hours a roof
+    /// opened in the early evening could cross it before dawn, and the gate would hold in the
+    /// small hours of a clear night — the worst possible moment. Only a file claiming OPEN is
+    /// abandoned at all; see <see cref="PierCam.Capture.RoofMonitor"/>.
     /// </summary>
-    public int RoofAbandonMinutes { get; set; } = 720;
+    public int RoofAbandonMinutes { get; set; } = 1440;
 
     /// <summary>
     /// Whether an unreadable or stale roof file should permit recording. Off by default: a
@@ -262,6 +267,43 @@ internal sealed class HousekeepingSettings
 /// The marker showing where the telescope is pointing. Off by default: it needs N.I.N.A. and a
 /// calibration, and a feature that has neither must not appear to do anything.
 /// </summary>
+/// <summary>
+/// Posting the night to a Discord channel through a webhook. See <see cref="PierCam.Net.DiscordPoster"/>.
+/// </summary>
+internal sealed class DiscordSettings
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>
+    /// The channel's webhook URL, from Discord's Integrations settings.
+    ///
+    /// This is a password in URL form: anyone holding it can post to that channel as this
+    /// webhook. It is stored here in plain text like every other setting, kept out of the log
+    /// and the diagnostics text, and shown masked once it has been entered.
+    /// </summary>
+    public string WebhookUrl { get; set; } = string.Empty;
+
+    /// <summary>What the posts are attributed to in the channel. Discord shows this per message.</summary>
+    public string Username { get; set; } = "PierCam";
+
+    public bool PostStills { get; set; } = true;
+
+    /// <summary>
+    /// Minutes between stills. An hour is about ten pictures across a long night — enough to
+    /// watch the sky turn without burying the channel.
+    /// </summary>
+    public int StillEveryMinutes { get; set; } = 60;
+
+    public bool PostTimelapse { get; set; } = true;
+
+    /// <summary>
+    /// When the finished video is larger than the channel will take, post a smaller re-encoded
+    /// copy instead. The recorded file is never touched; the copy is made in the temp folder and
+    /// deleted afterwards.
+    /// </summary>
+    public bool ShrinkOversizeVideo { get; set; } = true;
+}
+
 /// <summary>Watching GitHub for a newer release. See <see cref="PierCam.Update.UpdateService"/>.</summary>
 internal sealed class UpdateSettings
 {
@@ -385,6 +427,7 @@ internal sealed class AppSettings
     public HousekeepingSettings Housekeeping { get; set; } = new();
     public TargetMarkerSettings TargetMarker { get; set; } = new();
     public UpdateSettings Updates { get; set; } = new();
+    public DiscordSettings Discord { get; set; } = new();
 
     public static string DefaultLibraryRoot() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PierCam");

@@ -1092,6 +1092,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <!-- 01 · APPEARANCE. Top-left corner of the assembly. Its right edge is set
@@ -1646,16 +1647,17 @@
                         </Grid>
                     </c:ChamferPanel>
 
-                    <!-- 08 · DIAGNOSTICS. Bottom rail, drawn 48px up into TARGET MARKER's row;
-                         only the right 320px of that band is plate - the index tab - mirroring
-                         TARGET MARKER's lifted bottom edge, the way VIDEO OUTPUT sits under
-                         APPEARANCE. Bottom-right cut 64 closes the assembly. -->
-                    <c:ChamferPanel x:Name="PlateDiag" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3"
-                                    Style="{StaticResource PlateAccent}" Margin="0,-48,0,0"
-                                    TopEdge="48>0@-320" Cuts="0,0,64,28" Padding="20,0,20,18">
+                    <!-- 08 · DISCORD. Drawn 48px up into TARGET MARKER's row; only the right
+                         320px of that band is plate - the index tab - mirroring TARGET MARKER's
+                         lifted bottom edge. Its own bottom is lifted 320px at the LEFT, where
+                         DIAGNOSTICS' tab rises: the tabs alternate sides down the assembly. -->
+                    <c:ChamferPanel x:Name="PlateDiscord" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3"
+                                    Style="{StaticResource Plate}" Margin="0,-48,0,0"
+                                    TopEdge="48>0@-320" BottomEdge="48>0@320" Padding="20,0,20,56">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="48"/>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
@@ -1664,10 +1666,103 @@
                                         VerticalAlignment="Center" Margin="0,10,0,0">
                                 <c:HazardStripes Width="44" Height="9" StripeWidth="2" StripeGap="4"
                                                  VerticalAlignment="Center" Margin="0,0,12,0"/>
-                                <c:BarCode Width="40" Height="12" Bars="10" Seed="8"
+                                <c:BarCode Width="40" Height="12" Bars="10" Seed="14"
                                            VerticalAlignment="Center" Margin="0,0,14,0"/>
-                                <TextBlock Text="08 / SYS" Style="{StaticResource Label}"
+                                <TextBlock Text="08 / NET" Style="{StaticResource Label}"
                                            Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
+                            </StackPanel>
+
+                            <HeaderedContentControl Grid.Row="1" Style="{StaticResource PlateHead}" Margin="0,18,0,0">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock Text="DISCORD" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <TextBlock Text="" Style="{StaticResource Label}"/>
+                            </HeaderedContentControl>
+
+                            <Grid Grid.Row="2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.1*"/>
+                                    <ColumnDefinition Width="28"/>
+                                    <ColumnDefinition Width="1.3*"/>
+                                    <ColumnDefinition Width="28"/>
+                                    <ColumnDefinition Width="1*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- The switches. -->
+                                <StackPanel Grid.Column="0">
+                                    <CheckBox x:Name="DiscordEnabledCheck" Content="POST THE NIGHT TO A CHANNEL"
+                                              Checked="OnDiscordSettingsChanged" Unchecked="OnDiscordSettingsChanged"/>
+                                    <CheckBox x:Name="DiscordStillsCheck" Content="STILLS THROUGH THE NIGHT" Margin="22,0,0,0"
+                                              Checked="OnDiscordSettingsChanged" Unchecked="OnDiscordSettingsChanged"/>
+                                    <CheckBox x:Name="DiscordVideoCheck" Content="THE TIMELAPSE WHEN IT FINISHES" Margin="22,0,0,0"
+                                              Checked="OnDiscordSettingsChanged" Unchecked="OnDiscordSettingsChanged"/>
+                                    <CheckBox x:Name="DiscordShrinkCheck" Content="SHRINK IT IF THE CHANNEL REFUSES IT" Margin="44,0,0,0"
+                                              ToolTip="Uploads a smaller re-encoded copy when the video is over the channel's limit. Your recording is never touched."
+                                              Checked="OnDiscordSettingsChanged" Unchecked="OnDiscordSettingsChanged"/>
+                                    <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,8,0,0"
+                                               Text="Stills go up only while a night is recording. Nothing PierCam posts ever pings anyone."/>
+                                </StackPanel>
+                                <Rectangle Grid.Column="1" Width="1" HorizontalAlignment="Center"
+                                           Fill="{DynamicResource HairlineSoft}" Margin="0,2"/>
+
+                                <!-- The webhook itself. -->
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="WEBHOOK URL" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="DiscordUrlBox" Margin="0,0,0,8"
+                                             GotFocus="OnDiscordUrlFocus" LostFocus="OnDiscordUrlBlur"
+                                             ToolTip="Discord → Server Settings → Integrations → Webhooks → Copy Webhook URL"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                        <Ellipse x:Name="DiscordLed" Width="7" Height="7" VerticalAlignment="Center"
+                                                 Fill="{DynamicResource TextFaint}" Margin="0,0,9,0"/>
+                                        <TextBlock x:Name="DiscordStatus" Style="{StaticResource FieldLabel}"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                    <WrapPanel Orientation="Horizontal">
+                                        <Button x:Name="DiscordTestButton" Content="TEST POST"
+                                                Margin="0,0,8,8" Click="OnDiscordTest"/>
+                                        <Button x:Name="DiscordFrameButton" Content="SEND THIS FRAME"
+                                                Margin="0,0,8,8" Click="OnDiscordSendFrame"
+                                                ToolTip="Posts the live view as it looks right now."/>
+                                        <Button x:Name="DiscordLastNightButton" Content="SEND LAST NIGHT"
+                                                Margin="0,0,0,8" Click="OnDiscordSendLastNight"
+                                                ToolTip="Posts the most recent finished timelapse from the library."/>
+                                    </WrapPanel>
+                                </StackPanel>
+                                <Rectangle Grid.Column="3" Width="1" HorizontalAlignment="Center"
+                                           Fill="{DynamicResource HairlineSoft}" Margin="0,2"/>
+
+                                <!-- How often, and under what name. -->
+                                <StackPanel Grid.Column="4">
+                                    <TextBlock Text="A STILL EVERY (MIN)" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="DiscordEveryBox" LostFocus="OnDiscordSettingsChanged" Margin="0,0,0,10"/>
+                                    <TextBlock Text="POST AS" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="DiscordNameBox" LostFocus="OnDiscordSettingsChanged"/>
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
+                    </c:ChamferPanel>
+
+                    <!-- 09 · DIAGNOSTICS. Bottom rail, drawn 48px up into DISCORD's row; only the
+                         left 320px of that band is plate - the index tab - mirroring DISCORD's
+                         lifted bottom edge. Bottom-right cut 64 closes the assembly. -->
+                    <c:ChamferPanel x:Name="PlateDiag" Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="3"
+                                    Style="{StaticResource PlateAccent}" Margin="0,-48,0,0"
+                                    TopEdge="0>48@320" Cuts="0,0,64,28" Padding="20,0,20,18">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="48"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- The tab: index code and a strip, kept inside the raised 320px. -->
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Left"
+                                        VerticalAlignment="Center" Margin="0,10,0,0">
+                                <TextBlock Text="09 / SYS" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextDim}" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                <c:BarCode Width="40" Height="12" Bars="10" Seed="8"
+                                           VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                <c:HazardStripes Width="44" Height="9" StripeWidth="2" StripeGap="4"
+                                                 VerticalAlignment="Center"/>
                             </StackPanel>
 
                         <!-- Two arrangements, switched by FitDiagnostics on the window width.

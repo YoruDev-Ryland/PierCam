@@ -133,6 +133,12 @@ internal sealed class CaptureEngine : IDisposable
     /// goes on without it.
     /// </summary>
     public PierCam.Sky.TargetMarkerService? Marker { get; set; }
+
+    /// <summary>
+    /// Posts the night to a Discord channel, when one is configured. Offered the same frame the
+    /// live view gets — timestamp, marker ring and all — and only while a session is recording.
+    /// </summary>
+    public PierCam.Net.DiscordPoster? Discord { get; set; }
     private int _markerFaults;
 
     private void MarkerFault(Exception ex)
@@ -559,6 +565,21 @@ internal sealed class CaptureEngine : IDisposable
                 }
 
                 Publish(work);
+
+                // Discord gets the frame exactly as it was just published, and only from a
+                // session that is actually recording. Copying it is a few milliseconds once an
+                // hour; everything after that happens on the poster's own thread.
+                if (recording && Discord is { } discord)
+                {
+                    try
+                    {
+                        var when = DateTime.Now;
+                        if (discord.WantsStill(when))
+                            discord.PostStill(work, processor.Width, processor.Height, StillCaption(session!, when), when);
+                    }
+                    catch (Exception ex) { App.Log(ex, "Discord still"); }
+                }
+
                 _lastFrameSeconds = sw.Elapsed.TotalSeconds;
                 Interlocked.Increment(ref _framesCaptured);
                 FrameReady?.Invoke();
@@ -748,6 +769,16 @@ internal sealed class CaptureEngine : IDisposable
         catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException)
         {
         }
+    }
+
+    /// <summary>The line under a still: where the night is up to, in the terms the app itself uses.</summary>
+    private string StillCaption(RecordingSession session, DateTime now)
+    {
+        var frames = session.Encoder.FramesWritten;
+        var elapsed = now - session.Manifest.StartedLocal;
+        var sky = _analyzer?.LastSkyLevel is { } level ? $" · sky {level * 100:0}%" : string.Empty;
+        return $"**{session.Manifest.Title}** · {now:HH:mm} · {frames:N0} frames in " +
+               $"{(int)elapsed.TotalHours}h {elapsed.Minutes}m · {_currentExposure.Seconds:0.##}s @ gain {_currentExposure.Gain}{sky}";
     }
 
     private void Publish(byte[] work)
