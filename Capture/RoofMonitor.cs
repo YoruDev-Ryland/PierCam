@@ -67,7 +67,7 @@ internal sealed class RoofMonitor : IDisposable
     private RoofStatus _status = RoofStatus.Unconfigured;
 
     private string? _path;
-    private int _abandonMinutes = 720;
+    private int _abandonMinutes = 1440;
 
     /// <summary>Raised after every poll that changed the state. Fires on a pool thread.</summary>
     public event Action<RoofStatus>? Changed;
@@ -169,8 +169,16 @@ internal sealed class RoofMonitor : IDisposable
         var freshest = reported is { } r && r > writtenLocal ? r : writtenLocal;
         var age = now - freshest;
 
-        // Only give up on the file when it is old enough that something is genuinely broken.
-        if (age > TimeSpan.FromMinutes(abandonMinutes))
+        // Only give up on the file when it is old enough that something is genuinely broken — and
+        // only when it claims the roof is OPEN.
+        //
+        // A stale OPEN is the dangerous one: if the writer died while the roof actually shut,
+        // believing it would put a night of closed roof in the video. A stale CLOSED reaches the
+        // same decision whether it is believed or called Unknown — nothing films either way — so
+        // believing it costs nothing and says something true. It also stops a perfectly ordinary
+        // weathered-out spell, where the roof shut and simply never moved again, from being
+        // reported as a fault.
+        if (state == RoofState.Open && age > TimeSpan.FromMinutes(abandonMinutes))
             return new RoofStatus(RoofState.Unknown, reported, now,
                 $"abandoned — no update for {FormatAge(age)}", age, IsQuiet: true);
 

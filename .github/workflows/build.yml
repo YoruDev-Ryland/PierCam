@@ -124,9 +124,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist/*Setup.exe, dist/*.zip).FullName `
-            --title "PierCam ${{ steps.ver.outputs.version }}" `
-            --generate-notes
+          # Release notes written by hand live in the repository, one file per tag. GitHub's
+          # generated notes amount to a single "Full Changelog" link, which tells someone
+          # deciding whether to download nothing at all; notes in the repo are reviewed
+          # alongside the change that needs them. A tag with no file still gets the old line.
+          $notes = "docs/release-notes/$env:GITHUB_REF_NAME.md"
+          $params = @(
+            $env:GITHUB_REF_NAME
+            (Get-ChildItem dist/*Setup.exe, dist/*.zip).FullName
+            '--title', "PierCam ${{ steps.ver.outputs.version }}"
+          )
+          if (Test-Path $notes) {
+            Write-Host "release notes from $notes"
+            $params += @('--notes-file', $notes)
+          } else {
+            Write-Host "no $notes - falling back to generated notes"
+            $params += '--generate-notes'
+          }
+          gh release create @params
 
       # One rolling pre-release that always reflects main, replaced on each push rather than
       # accumulating a release per commit.
