@@ -64,6 +64,9 @@ internal sealed class TargetMarkerService : IDisposable
     private DateTime? _checkedNight;
     private bool _checking;
 
+    /// <summary>Consecutive failed nightly checks. Two in a row before a calibration is discarded.</summary>
+    private int _checkStrikes;
+
     public TargetMarkerService(AppSettings settings, Func<(string? serial, int width, int height)> camera, Action<Action> onUi)
     {
         _settings = settings;
@@ -443,18 +446,34 @@ internal sealed class TargetMarkerService : IDisposable
                     _checkedNight = SunCalculator.NightDateFor(DateTime.Now).Date;
                     var model = lens.ScaledTo(rw, rh);
                     if (model is null || stars.Count < 150) return;           // cloudy: nothing to judge by
+
+                    // Not this camera's calibration, so it says nothing about whether the camera
+                    // moved. Swapping to another camera is a normal thing to do, and the tick
+                    // notices the serial change and recalibrates properly; judging the old lens
+                    // against a different sensor here would only throw a good answer away.
+                    var rec = _settings.TargetMarker.Calibration;
+                    var serial = _camera().serial;
+                    if (rec is not null && !string.IsNullOrEmpty(rec.CameraSerial) &&
+                        !string.IsNullOrEmpty(serial) && rec.CameraSerial != serial) return;
+
                     var calibrator = new LensCalibrator(_settings.Site.Latitude, _settings.Site.Longitude, 1, CancellationToken.None);
                     var (matched, rms) = calibrator.Check(model, new[] { new CalibrationFrame(utc, rw, rh, stars) });
-                    var rec = _settings.TargetMarker.Calibration;
                     var expected = rec is null ? 60 : Math.Max(20, rec.Stars / 9.0);
-                    App.Note($"Target marker nightly check: {matched} stars matched ({expected:0} expected), {rms:0.0} px", "Marker");
-                    if (matched < expected * 0.25)
-                    {
-                        _lens = null; _scaled = null;
-                        lock (_tonight) _tonight.Clear();
-                        SetStatus(MarkerPhase.Collecting, "Recalibrating from tonight's sky",
-                            "The calibration no longer matches the stars - has the camera moved?");
-                    }
+                    var failed = matched < expected * 0.25;
+                    App.Note($"Target marker nightly check: {matched} stars matched ({expected:0} expected), {rms:0.0} px" +
+                             (failed ? $" - strike {_checkStrikes + 1} of 2" : ""), "Marker");
+
+                    // Two strikes, because one bad look is usually the view and not the camera:
+                    // cloud thick enough to leave 150 detections, a roof in the way, someone
+                    // walking past with a torch. A camera that has actually moved fails every time.
+                    if (!failed) { _checkStrikes = 0; return; }
+                    if (++_checkStrikes < 2) return;
+
+                    _checkStrikes = 0;
+                    _lens = null; _scaled = null;
+                    lock (_tonight) _tonight.Clear();
+                    SetStatus(MarkerPhase.Collecting, "Recalibrating from tonight's sky",
+                        "The calibration no longer matches the stars - has the camera moved?");
                 }
                 finally { _checking = false; }
                 return;
