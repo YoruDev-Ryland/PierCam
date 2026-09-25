@@ -272,13 +272,17 @@ internal sealed class CaptureEngine : IDisposable
             while (Directory.Exists(folder)) folder = Path.Combine(_settings.TimelapseRoot, $"{folderName}_{++suffix}");
             Directory.CreateDirectory(folder);
 
+            // The chosen resolution is a box to fit the sensor inside, not a shape to force it
+            // into: a square sensor scaled to 1920×1080 comes out stretched.
+            var (outW, outH) = FfmpegEncoder.FitWithin(_processor.Width, _processor.Height, v.OutputWidth, v.OutputHeight);
+
             var manifest = new TimelapseManifest
             {
                 Title = string.IsNullOrWhiteSpace(title) ? started.ToString("dddd d MMMM yyyy") : title,
                 StartedLocal = started,
                 Fps = v.Fps,
-                Width = v.OutputWidth,
-                Height = v.OutputHeight,
+                Width = outW,
+                Height = outH,
                 ExposureSeconds = _settings.Camera.ExposureSeconds,
                 Gain = _settings.Camera.Gain,
                 IntervalSeconds = _settings.Session.IntervalSeconds,
@@ -291,7 +295,7 @@ internal sealed class CaptureEngine : IDisposable
 
             var encoder = new FfmpegEncoder(ffmpeg, Path.Combine(folder, manifest.VideoFile),
                 _processor.Width, _processor.Height, v.Fps, v.Crf, v.Preset,
-                v.OutputWidth, v.OutputHeight, v.Denoise);
+                outW, outH, v.Denoise);
 
             _recording = new RecordingSession(manifest, encoder, folder, ffmpeg, _processor.Width, _processor.Height);
 
@@ -303,7 +307,7 @@ internal sealed class CaptureEngine : IDisposable
                 {
                     _recording.StartMarkedCopy(new FfmpegEncoder(ffmpeg, Path.Combine(folder, RecordingSession.MarkedVideoName),
                         _processor.Width, _processor.Height, v.Fps, v.Crf, v.Preset,
-                        v.OutputWidth, v.OutputHeight, v.Denoise));
+                        outW, outH, v.Denoise));
                 }
                 catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
                 {

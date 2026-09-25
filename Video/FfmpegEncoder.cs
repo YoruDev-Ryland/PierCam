@@ -75,6 +75,33 @@ internal sealed class FfmpegEncoder : IDisposable
     /// against the same pixel in previous frames, and in a timelapse the sky rotates between
     /// frames — turn it up and stars smear into short trails.
     /// </summary>
+    /// <summary>
+    /// The real output size for a sensor inside a chosen resolution box.
+    ///
+    /// The resolution picker offers 16:9 sizes, but sensors are not all 16:9 — the ASI676MC is
+    /// square, an ASI294 is 4:3, an ASI2600 is 3:2. Scaling a square frame to 1920×1080 does not
+    /// crop it, it *stretches* it, and the night is ruined in a way no later pass can undo. So the
+    /// chosen size is treated as a box to fit inside, keeping the sensor's own shape: a square
+    /// sensor asked for 1920×1080 records 1080×1080.
+    ///
+    /// It never enlarges, either. A 1304×976 sensor asked for 1080p gains nothing from being
+    /// blown up and would cost bitrate for the privilege, so it records at its own size.
+    ///
+    /// Both dimensions come back even, which H.264 with yuv420p requires.
+    /// </summary>
+    public static (int Width, int Height) FitWithin(int sourceWidth, int sourceHeight, int boxWidth, int boxHeight)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0) return (Even(boxWidth), Even(boxHeight));
+        if (boxWidth <= 0 || boxHeight <= 0) return (Even(sourceWidth), Even(sourceHeight));
+
+        var scale = Math.Min(boxWidth / (double)sourceWidth, boxHeight / (double)sourceHeight);
+        if (scale >= 1) return (Even(sourceWidth), Even(sourceHeight));
+
+        return (Even((int)Math.Round(sourceWidth * scale)), Even((int)Math.Round(sourceHeight * scale)));
+
+        static int Even(int v) => Math.Max(2, v - (v & 1));
+    }
+
     public static string? DenoiseFilter(DenoiseLevel level) => level switch
     {
         DenoiseLevel.Light => "hqdn3d=3:2:1:1",
