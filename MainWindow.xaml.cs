@@ -238,12 +238,7 @@ public partial class MainWindow : Window
             new Option<DenoiseLevel>("STRONG", DenoiseLevel.Strong),
         };
 
-        ResolutionCombo.ItemsSource = new[]
-        {
-            new Option<(int W, int H)>("1920 × 1080", (1920, 1080)),
-            new Option<(int W, int H)>("1280 × 720", (1280, 720)),
-            new Option<(int W, int H)>("960 × 540", (960, 540)),
-        };
+        BuildResolutionOptions();
 
         PresetCombo.ItemsSource = new[]
         {
@@ -369,8 +364,10 @@ public partial class MainWindow : Window
         SelectOption(SpeedCombo, 1.0);
         SelectOption(ThemeCombo, ThemeManager.Resolve(_settings.ThemeId).Id);
 
+        // Targets are boxes named by their longest edge now; older settings hold a 16:9 pair,
+        // so they are matched on that edge.
         DownscaleCombo.SelectedItem =
-            Array.Find(VideoTranscoder.Targets, t => t.Width == v.DownscaleWidth && t.Height == v.DownscaleHeight)
+            Array.Find(VideoTranscoder.Targets, t => t.Width == Math.Max(v.DownscaleWidth, v.DownscaleHeight))
             ?? VideoTranscoder.Targets[1];
 
         NeutraliseCheck.IsChecked = st.NeutraliseBackground;
@@ -416,6 +413,40 @@ public partial class MainWindow : Window
         UpdatePreviewAutoUi();
         UpdateFfmpegStatus();
         UpdateViewportChrome();
+    }
+
+    /// <summary>
+    /// The sizes this camera can record, offered as its own shape rather than as 16:9 boxes.
+    ///
+    /// A resolution is chosen by its longest edge, and the sensor keeps its proportions inside
+    /// that: 1920 means 1920×1080 on a 16:9 camera, 1920×1920 on a square one and 1920×1284 on a
+    /// 3:2 one. The full sensor is always the first choice, because a camera bought for its
+    /// detail should be able to record all of it, and sizes larger than the sensor are left out —
+    /// enlarging a frame adds nothing but bitrate.
+    /// </summary>
+    private void BuildResolutionOptions()
+    {
+        int sw = _engine.Width > 0 ? _engine.Width : 1920;
+        int sh = _engine.Height > 0 ? _engine.Height : 1080;
+        var native = Math.Max(sw, sh);
+
+        var edges = new List<int> { native };
+        foreach (var edge in new[] { 1920, 1280, 960, 640 })
+            if (edge < native) edges.Add(edge);
+
+        ResolutionCombo.ItemsSource = edges.Select(edge =>
+        {
+            var (w, h) = FfmpegEncoder.FitWithin(sw, sh, edge, edge);
+            var label = edge == native ? $"{w} × {h} — FULL SENSOR" : $"{w} × {h}";
+            return new Option<(int W, int H)>(label, (edge, edge));
+        }).ToList();
+
+        // Settings hold the chosen box; older ones hold a 16:9 box, so match on the long edge.
+        var wanted = Math.Max(_settings.Video.OutputWidth, _settings.Video.OutputHeight);
+        var pick = edges.Contains(wanted) ? wanted : edges.FirstOrDefault(e => e <= wanted, edges[^1]);
+        SelectOption(ResolutionCombo, (pick, pick));
+        _settings.Video.OutputWidth = pick;
+        _settings.Video.OutputHeight = pick;
     }
 
     private static void SelectOption<T>(Selector combo, T value)
@@ -973,7 +1004,14 @@ public partial class MainWindow : Window
             RescanButton.IsEnabled = false;
             VpFormat.Text = $"{descriptor.MaxWidth} × {descriptor.MaxHeight}   RAW16   " +
                             (descriptor.IsColor ? $"BAYER {descriptor.Bayer}" : "MONO");
-            
+
+            // The sizes on offer belong to the camera: a square sensor gets square ones. The plan's
+            // estimate follows from the sensor too, so both are rebuilt the moment one connects.
+            var reloading = _loading;
+            _loading = true;
+            BuildResolutionOptions();
+            _loading = reloading;
+            UpdatePlan();
         }
         catch (Exception ex)
         {
@@ -999,7 +1037,13 @@ public partial class MainWindow : Window
         ConnectButton.Content = "CONNECT";
         CameraCombo.IsEnabled = true;
         RescanButton.IsEnabled = true;
-        
+
+        // Back to describing no particular sensor, rather than the one just unplugged.
+        var wasLoading = _loading;
+        _loading = true;
+        BuildResolutionOptions();
+        _loading = wasLoading;
+        UpdatePlan();
         UpdateStatusBar();
     }
 
@@ -1577,7 +1621,7 @@ public partial class MainWindow : Window
         _settings.Video.Fps = Selected(FpsCombo, 30);
         _settings.Video.Crf = Selected(QualityCombo, 26);
         _settings.Video.Denoise = Selected(DenoiseCombo, DenoiseLevel.Medium);
-        var res = Selected(ResolutionCombo, (1920, 1080));
+        var res = Selected(ResolutionCombo, (1920, 1920));
         _settings.Video.OutputWidth = res.Item1;
         _settings.Video.OutputHeight = res.Item2;
         UpdatePlan();
@@ -1594,10 +1638,14 @@ public partial class MainWindow : Window
         var sensorW = _engine.Width > 0 ? _engine.Width : 1920;
         var sensorH = _engine.Height > 0 ? _engine.Height : 1080;
 
+        // What this camera will really record. The picker names the size in the sensor's own
+        // shape, so this only reshapes a setting left over from a different camera.
+        var (outW, outH) = FfmpegEncoder.FitWithin(sensorW, sensorH,
+            _settings.Video.OutputWidth, _settings.Video.OutputHeight);
+
         var plan = CapturePlan.Compute(night, _settings.Camera.ExposureSeconds,
             _settings.Session.IntervalSeconds, _settings.Video.Fps, _settings.Video.Crf,
-            _settings.Video.OutputWidth, _settings.Video.OutputHeight, sensorW, sensorH,
-            _settings.Video.Denoise);
+            outW, outH, sensorW, sensorH, _settings.Video.Denoise);
 
         var basis = _settings.Session.Schedule switch
         {
@@ -1895,7 +1943,7 @@ public partial class MainWindow : Window
         AutoDownscaleCheck.IsChecked = h.AutoDownscale;
         AutoDownscaleDaysBox.Text = h.AfterDays.ToString(CultureInfo.InvariantCulture);
         AutoDownscaleTargetCombo.SelectedItem =
-            Array.Find(VideoTranscoder.Targets, t => t.Width == h.TargetWidth && t.Height == h.TargetHeight)
+            Array.Find(VideoTranscoder.Targets, t => t.Width == Math.Max(h.TargetWidth, h.TargetHeight))
             ?? VideoTranscoder.Targets[0];
         UpdateHousekeepingHint();
     }
@@ -1945,8 +1993,8 @@ public partial class MainWindow : Window
               "and would be re-encoded the next time a sweep runs.";
 
         return Dialogs.Confirm(this, "Shrink old timelapses automatically",
-            $"Timelapses older than {h.AfterDays} days will be re-encoded to " +
-            $"{h.TargetWidth} × {h.TargetHeight}, on their own, when nobody is watching.\n\n" +
+            $"Timelapses older than {h.AfterDays} days will be re-encoded down to " +
+            $"{Math.Max(h.TargetWidth, h.TargetHeight)} on their longest edge, on their own, when nobody is watching.\n\n" +
             $"{affected}\n\n" +
             "This replaces each video in place. The original resolution cannot be recovered.",
             confirmText: "TURN ON", danger: true);
@@ -1966,10 +2014,11 @@ public partial class MainWindow : Window
         var due = _housekeeper.Due(_library.Items, DateTime.Now);
         var ran = h.LastRun is { } last ? $" · LAST RUN {last:d MMM HH:mm}".ToUpperInvariant() : string.Empty;
 
+        var edge = Math.Max(h.TargetWidth, h.TargetHeight);
         HousekeepingHint.Text = due.Count == 0
-            ? $"NOTHING IS OLDER THAN {h.AfterDays} DAYS AND STILL LARGER THAN {h.TargetWidth}×{h.TargetHeight}.{ran}"
-            : $"{due.Count} TIMELAPSE{(due.Count == 1 ? "" : "S")} WOULD BE SHRUNK TO " +
-              $"{h.TargetWidth}×{h.TargetHeight} ON THE NEXT SWEEP. THIS REPLACES THE VIDEO AND CANNOT BE UNDONE.{ran}";
+            ? $"NOTHING IS OLDER THAN {h.AfterDays} DAYS AND STILL LARGER THAN {edge} ON ITS LONGEST EDGE.{ran}"
+            : $"{due.Count} TIMELAPSE{(due.Count == 1 ? "" : "S")} WOULD BE SHRUNK TO {edge} ON THE LONGEST EDGE " +
+              $"ON THE NEXT SWEEP. THIS REPLACES THE VIDEO AND CANNOT BE UNDONE.{ran}";
     }
 
     private void OnAnimationsChanged(object sender, RoutedEventArgs e)

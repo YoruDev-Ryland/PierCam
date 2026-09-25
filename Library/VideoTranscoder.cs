@@ -5,6 +5,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using PierCam.Models;
+using PierCam.Video;
 
 namespace PierCam.Library;
 
@@ -50,12 +51,17 @@ internal sealed class VideoTranscoder
     /// of the pixels comes out at about an eighth of the size, because downscaling averages away
     /// most of the sensor noise that was costing the bitrate.
     /// </summary>
+    /// <summary>
+    /// Sizes are named by their longest edge, because the library holds whatever shape each
+    /// camera had: 1280 is 1280×720 from a 16:9 night and 1280×1280 from a square one. Each is
+    /// fitted inside, never stretched.
+    /// </summary>
     public static readonly DownscaleTarget[] Targets =
     {
-        new("1280 × 720 — HD, about 30% the size", 1280, 720),
-        new("960 × 540 — quarter resolution, about 13%", 960, 540),
-        new("854 × 480 — 480p, about 9%", 854, 480),
-        new("640 × 360 — about 4%", 640, 360),
+        new("1280 LONGEST EDGE — HD, about 30% the size", 1280, 1280),
+        new("960 LONGEST EDGE — quarter resolution, about 13%", 960, 960),
+        new("854 LONGEST EDGE — 480p, about 9%", 854, 854),
+        new("640 LONGEST EDGE — about 4%", 640, 640),
     };
 
     /// <summary>
@@ -97,6 +103,10 @@ internal sealed class VideoTranscoder
                 continue;
             }
 
+            // The target is a box to fit inside: these videos are not all 16:9, and a square
+            // night forced to 1280×720 would come out stretched.
+            var (fitW, fitH) = FfmpegEncoder.FitWithin(m.Width, m.Height, target.Width, target.Height);
+
             var before = new FileInfo(m.VideoPath).Length;
             var tempPath = Path.Combine(m.FolderPath, "timelapse.downscale.mp4");
             // A night with a marked copy has two videos to reduce; each takes half the progress bar.
@@ -105,7 +115,7 @@ internal sealed class VideoTranscoder
 
             try
             {
-                var ok = await RunFfmpegAsync(m.VideoPath, tempPath, target, crf, m.FrameCount,
+                var ok = await RunFfmpegAsync(m.VideoPath, tempPath, fitW, fitH, crf, m.FrameCount,
                     f => Report(f * share), ct).ConfigureAwait(false);
 
                 if (!ok || !File.Exists(tempPath) || new FileInfo(tempPath).Length < 1024)
@@ -126,8 +136,8 @@ internal sealed class VideoTranscoder
                     m.OriginalWidth = m.Width;
                     m.OriginalHeight = m.Height;
                 }
-                m.Width = target.Width;
-                m.Height = target.Height;
+                m.Width = fitW;
+                m.Height = fitH;
                 m.VideoBytes = after;
                 m.Save(m.FolderPath);
             }
@@ -152,7 +162,7 @@ internal sealed class VideoTranscoder
                 try
                 {
                     var markedBefore = new FileInfo(markedPath).Length;
-                    var markedOk = await RunFfmpegAsync(markedPath, markedTemp, target, crf, m.FrameCount,
+                    var markedOk = await RunFfmpegAsync(markedPath, markedTemp, fitW, fitH, crf, m.FrameCount,
                         f => Report(0.5 + f * 0.5), ct).ConfigureAwait(false);
                     if (markedOk && File.Exists(markedTemp) && new FileInfo(markedTemp).Length >= 1024)
                     {
@@ -188,13 +198,13 @@ internal sealed class VideoTranscoder
         });
     }
 
-    private async Task<bool> RunFfmpegAsync(string input, string output, DownscaleTarget target,
+    private async Task<bool> RunFfmpegAsync(string input, string output, int width, int height,
         int crf, int expectedFrames, Action<double> onProgress, CancellationToken ct)
     {
         // -progress pipe:1 gives machine-readable status on stdout, which is far more reliable
         // to parse than the human-facing stderr line.
         var args = $"-hide_banner -nostdin -loglevel error -y -i \"{input}\" " +
-                   $"-vf \"scale={target.Width}:{target.Height}:flags=lanczos\" " +
+                   $"-vf \"scale={width}:{height}:flags=lanczos\" " +
                    $"-c:v libx264 -preset medium -crf {crf} -pix_fmt yuv420p " +
                    $"-an -movflags +faststart -progress pipe:1 -nostats \"{output}\"";
 

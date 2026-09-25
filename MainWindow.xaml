@@ -1215,6 +1215,8 @@
                                     </StackPanel>
                                     <StackPanel Grid.Column="4">
                                         <TextBlock Text="RESOLUTION" Style="{StaticResource FieldLabel}"/>
+                                        <!-- Built from the connected camera: the sizes offered are
+                                             the sensor's own shape, largest first. -->
                                         <ComboBox x:Name="ResolutionCombo" SelectionChanged="OnPlanChanged"/>
                                     </StackPanel>
                                     <StackPanel Grid.Column="6">
