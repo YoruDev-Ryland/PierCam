@@ -42,6 +42,13 @@ internal sealed class TimelapseManifest
     public int IntervalSeconds { get; set; }
     public string CameraName { get; set; } = string.Empty;
     public string? CameraSerial { get; set; }
+
+    /// <summary>
+    /// The frame turn these were recorded through. A calibration solved from this night belongs
+    /// to that turn, and has to be carried across if the camera has since been turned.
+    /// </summary>
+    public int OrientationQuarters { get; set; }
+    public bool OrientationMirror { get; set; }
     public double? SensorTempStartC { get; set; }
     public double? SensorTempEndC { get; set; }
 
@@ -65,6 +72,13 @@ internal sealed class TimelapseManifest
     public long EstimatedRawBytes { get; set; }
 
     [JsonIgnore] public string FolderPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// When the file this was read from was last written. The library compares it to decide
+    /// whether a refresh has to rebuild an entry, so a session.json edited on disk is noticed
+    /// rather than served from memory until the app restarts.
+    /// </summary>
+    [JsonIgnore] public DateTime FileStampUtc { get; set; }
     [JsonIgnore] public string VideoPath => Path.Combine(FolderPath, VideoFile);
     [JsonIgnore] public string PosterPath => Path.Combine(FolderPath, PosterFile);
     [JsonIgnore] public string? MarkedVideoPath => MarkedVideoFile is null ? null : Path.Combine(FolderPath, MarkedVideoFile);
@@ -109,6 +123,7 @@ internal sealed class TimelapseManifest
             var m = JsonSerializer.Deserialize<TimelapseManifest>(File.ReadAllText(path), Json);
             if (m is null) return null;
             m.FolderPath = folder;
+            m.FileStampUtc = File.GetLastWriteTimeUtc(path);
             return m;
         }
         catch (Exception ex) when (ex is IOException or JsonException)

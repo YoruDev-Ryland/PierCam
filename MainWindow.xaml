@@ -479,6 +479,55 @@
                                    FontWeight="Bold" HorizontalAlignment="Center"
                                    VerticalAlignment="Center"/>
 
+                        <!-- ── CENSOR EDITOR ──
+                             Laid over the live view, because a mask is drawn on what the camera
+                             actually sees. The canvas is only hit-testable while editing, so it
+                             never interferes with the ordinary view. Points are drawn in code
+                             (see RedrawCensorOverlay) rather than bound, since they move under
+                             the mouse. -->
+                        <Canvas x:Name="CensorCanvas" Background="#01000000" Visibility="Collapsed"
+                                MouseLeftButtonDown="OnCensorMouseDown"
+                                MouseLeftButtonUp="OnCensorMouseUp"
+                                MouseMove="OnCensorMouseMove"
+                                MouseRightButtonDown="OnCensorRightClick"
+                                SizeChanged="OnCensorCanvasResized"/>
+
+                        <!-- Positioned by margin rather than alignment so it can be dragged out of
+                             the way of whatever is being masked; see OnCensorBarDrag. -->
+                        <c:ChamferPanel x:Name="CensorBar" Visibility="Collapsed"
+                                        HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,16,0,0"
+                                        Background="{DynamicResource GlassDeep}"
+                                        Stroke="{DynamicResource Accent}" StrokeThickness="1"
+                                        Corners="Diagonal" Padding="16,11" Cursor="SizeAll"
+                                        MouseLeftButtonDown="OnCensorBarDragStart"
+                                        MouseLeftButtonUp="OnCensorBarDragEnd"
+                                        MouseMove="OnCensorBarDrag">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,7">
+                                    <c:HazardStripes Width="30" Height="7" StripeWidth="2" StripeGap="3"
+                                                     VerticalAlignment="Center" Opacity="0.7"/>
+                                    <TextBlock Text="DRAG TO MOVE" Style="{StaticResource Label}"
+                                               Foreground="{DynamicResource TextFaint}" Margin="9,0,9,0"
+                                               VerticalAlignment="Center"/>
+                                    <c:HazardStripes Width="30" Height="7" StripeWidth="2" StripeGap="3"
+                                                     VerticalAlignment="Center" Opacity="0.7"/>
+                                </StackPanel>
+                                <TextBlock x:Name="CensorHint" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource TextDim}"
+                                           HorizontalAlignment="Center"
+                                           Text="CLICK TO ADD POINTS · DRAG TO MOVE ONE · RIGHT-CLICK TO REMOVE"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
+                                    <Button Content="DONE" Style="{StaticResource BtnPrimary}" Click="OnCensorDone"/>
+                                    <Button Content="NEW AREA" Margin="7,0,0,0" Click="OnCensorNewArea"/>
+                                    <Button Content="UNDO POINT" Margin="7,0,0,0" Click="OnCensorUndoPoint"/>
+                                    <Button Content="CLEAR ALL" Margin="7,0,0,0" Style="{StaticResource BtnGhost}"
+                                            Click="OnCensorClearAll"/>
+                                    <Button Content="CANCEL" Margin="7,0,0,0" Style="{StaticResource BtnGhost}"
+                                            Click="OnCensorCancel"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </c:ChamferPanel>
+
                         <!-- A blown-out frame renders as featureless grey, which looks like a
                              broken camera. Say what is actually happening instead. -->
                         <c:ChamferPanel x:Name="ExposureWarning" Visibility="Collapsed"
@@ -715,6 +764,20 @@
                                 <TextBlock Text="LIVE VIEW ONLY — DOES NOT AFFECT RECORDINGS"
                                            Style="{StaticResource Label}"
                                            Foreground="{DynamicResource TextFaint}" Margin="0,0,0,6"/>
+
+                                <!-- The live view's frame rate. Fewer frames is less CPU, and the sky
+                                     changes over minutes; the ceiling also scales with the sensor. -->
+                                <Grid Margin="0,0,0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="LIVE VIEW RATE" Style="{StaticResource FieldLabel}"
+                                               VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                    <ComboBox x:Name="PreviewFpsCombo" Grid.Column="1" SelectionChanged="OnPreviewFpsChanged"/>
+                                </Grid>
+                                <TextBlock x:Name="PreviewFpsHint" Style="{StaticResource FieldLabel}"
+                                           TextWrapping="Wrap" Margin="0,0,0,10"/>
 
                                 <CheckBox x:Name="PreviewAutoCheck" Checked="OnPreviewAutoChanged" Unchecked="OnPreviewAutoChanged"
                                           Content="AUTO EXPOSE LIVE VIEW"/>
@@ -1494,6 +1557,41 @@
                                     <TextBox x:Name="WbBlueBox" LostFocus="OnAdvancedChanged"/>
                                 </StackPanel>
                             </Grid>
+
+                            <Rectangle Style="{StaticResource Divider}"/>
+
+                            <!-- How the frame is turned. Changing it re-opens the camera, so it
+                                 is refused while a night is recording. -->
+                            <TextBlock Text="ORIENTATION" Style="{StaticResource FieldLabel}"/>
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="RotateCombo" Grid.Column="0" SelectionChanged="OnOrientationChanged"/>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <CheckBox x:Name="FlipHorizontalCheck" Content="MIRROR" Margin="0,0,14,0"
+                                              Checked="OnOrientationChanged" Unchecked="OnOrientationChanged"/>
+                                    <CheckBox x:Name="FlipVerticalCheck" Content="FLIP"
+                                              Checked="OnOrientationChanged" Unchecked="OnOrientationChanged"/>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock x:Name="OrientationHint" Style="{StaticResource FieldLabel}"
+                                       TextWrapping="Wrap" LineHeight="17"/>
+
+                            <Rectangle Style="{StaticResource Divider}"/>
+
+                            <!-- Blurring out a name taped to a pier. Drawn on the live view,
+                                 because that is where the thing being hidden can be seen. -->
+                            <CheckBox x:Name="CensorEnabledCheck" Content="BLUR OUT MASKED AREAS"
+                                      Checked="OnCensorSettingsChanged" Unchecked="OnCensorSettingsChanged"/>
+                            <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,6,0,8"
+                                       Text="For a name written on the pier. The blur is burned into the recording, so it cannot be undone afterwards."/>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="CensorEditButton" Content="EDIT MASK" Click="OnCensorEdit"/>
+                                <TextBlock x:Name="CensorSummary" Style="{StaticResource FieldLabel}"
+                                           VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            </StackPanel>
                         </StackPanel>
                     </c:ChamferPanel>
 
@@ -1632,8 +1730,13 @@
                                     </StackPanel>
                                     <TextBlock x:Name="MarkerDetail" Style="{StaticResource FieldLabel}" TextWrapping="Wrap"
                                                Margin="16,6,0,0" LineHeight="17"/>
-                                    <Button x:Name="MarkerRecalibrateButton" Content="RECALIBRATE" HorizontalAlignment="Left"
-                                            Margin="16,12,0,0" Click="OnMarkerRecalibrate"/>
+                                    <StackPanel Orientation="Horizontal" Margin="16,12,0,0">
+                                        <Button x:Name="MarkerRecalibrateButton" Content="RECALIBRATE" Click="OnMarkerRecalibrate"
+                                                ToolTip="Search the recorded nights again."/>
+                                        <Button x:Name="MarkerMovedButton" Content="CAMERA WAS MOVED" Margin="7,0,0,0"
+                                                Style="{StaticResource BtnGhost}" Click="OnMarkerCameraMoved"
+                                                ToolTip="Sets aside every night recorded before now, and learns afresh from the next dark sky."/>
+                                    </StackPanel>
                                 </StackPanel>
                                 <Rectangle Grid.Column="3" Width="1" HorizontalAlignment="Center"
                                            Fill="{DynamicResource HairlineSoft}" Margin="0,2"/>

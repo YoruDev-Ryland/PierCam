@@ -247,7 +247,12 @@ internal sealed class LibraryStore
         Items.Clear();
         foreach (var m in found)
         {
-            if (byFolder.TryGetValue(m.FolderPath, out var existing) && existing.Manifest.Status == m.Status)
+            // Reuse the entry only when the file behind it has not changed since it was read:
+            // that keeps the cached poster and the ticked selection across a refresh, while an
+            // edit on disk — a repaired aspect ratio, a hand-fixed title — is actually noticed.
+            if (byFolder.TryGetValue(m.FolderPath, out var existing) &&
+                existing.Manifest.Status == m.Status &&
+                existing.Manifest.FileStampUtc == m.FileStampUtc)
             {
                 Items.Add(existing);
             }

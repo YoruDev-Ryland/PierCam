@@ -68,8 +68,10 @@ internal sealed class AutoStretchAnalyzer
 
     public AutoStretchAnalyzer(FrameProcessor fp)
     {
-        _width = fp.Width;
-        _height = fp.Height;
+        // The sensor's own size: this reads the raw Bayer frame, which is never turned — the
+        // turn happens on the way out, and a rotated width here would walk off the end of it.
+        _width = fp.SensorWidth;
+        _height = fp.SensorHeight;
         _isColor = fp.IsColor;
         _imgType = fp.ImageType;
         _pattern = fp.Pattern;

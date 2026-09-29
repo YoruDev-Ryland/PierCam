@@ -24,18 +24,28 @@ internal sealed class FrameProcessor
     private readonly StretchLut _lut = new();
     private ushort[]? _widenScratch;
 
+    /// <summary>The sensor's own size, before the frame is turned.</summary>
+    public int SensorWidth { get; }
+    public int SensorHeight { get; }
+
+    /// <summary>The size of what comes out, which swaps for a quarter turn.</summary>
     public int Width { get; }
     public int Height { get; }
+
+    public FrameOrientation Orientation { get; }
     public bool IsColor { get; }
     public AsiImgType ImageType { get; }
     public byte[] Pattern => _pattern;
 
     public int RgbBytes => Width * Height * 3;
 
-    public FrameProcessor(int width, int height, bool isColor, AsiBayer bayer, AsiImgType imageType)
+    public FrameProcessor(int width, int height, bool isColor, AsiBayer bayer, AsiImgType imageType,
+        FrameOrientation orientation = default)
     {
-        Width = width;
-        Height = height;
+        SensorWidth = width;
+        SensorHeight = height;
+        Orientation = orientation;
+        (Width, Height) = orientation.Apply(width, height);
         IsColor = isColor && imageType != AsiImgType.Y8;
         ImageType = imageType;
         _pattern = bayer switch
@@ -45,6 +55,22 @@ internal sealed class FrameProcessor
             AsiBayer.GR => PatternGR,
             _ => PatternGB
         };
+    }
+
+    /// <summary>
+    /// Where a source row starts in the output, and how far each source column steps.
+    ///
+    /// Every one of the eight orientations is affine in x along a source row — a quarter turn
+    /// makes a row into a column, so the step becomes a whole output row rather than three bytes.
+    /// Working it out once per row keeps the turn out of the inner loop entirely.
+    /// </summary>
+    private void RowMapping(int y, out int start, out int step)
+    {
+        var (x0, y0) = Orientation.Map(0, y, SensorWidth, SensorHeight);
+        start = (y0 * Width + x0) * 3;
+        if (SensorWidth < 2) { step = 3; return; }
+        var (x1, y1) = Orientation.Map(1, y, SensorWidth, SensorHeight);
+        step = (y1 * Width + x1) * 3 - start;
     }
 
     /// <summary>Debayers <paramref name="raw"/> into <paramref name="rgb"/> applying the given stretch.</summary>
@@ -61,14 +87,14 @@ internal sealed class FrameProcessor
 
             case AsiImgType.Raw16:
             {
-                var src = MemoryMarshal.Cast<byte, ushort>(raw[..(Width * Height * 2)]);
+                var src = MemoryMarshal.Cast<byte, ushort>(raw[..(SensorWidth * SensorHeight * 2)]);
                 if (IsColor) Debayer(src, rgb); else ProcessMono(src, rgb);
                 return;
             }
 
             default: // RAW8 / Y8 — widen into the 16-bit domain so one set of LUTs covers both.
             {
-                var scratch = _widenScratch ??= new ushort[Width * Height];
+                var scratch = _widenScratch ??= new ushort[SensorWidth * SensorHeight];
                 for (var i = 0; i < scratch.Length; i++) scratch[i] = (ushort)(raw[i] << 8);
                 ReadOnlySpan<ushort> src = scratch;
                 if (IsColor) Debayer(src, rgb); else ProcessMono(src, rgb);
@@ -81,31 +107,37 @@ internal sealed class FrameProcessor
     {
         // The SDK hands back BGR24; route it through the LUTs so the stretch still applies.
         var r = _lut.R; var g = _lut.G; var b = _lut.B;
-        var n = Width * Height;
-        for (var i = 0; i < n; i++)
+        for (var y = 0; y < SensorHeight; y++)
         {
-            var o = i * 3;
-            rgb[o + 0] = r[raw[o + 2] << 8];
-            rgb[o + 1] = g[raw[o + 1] << 8];
-            rgb[o + 2] = b[raw[o + 0] << 8];
+            RowMapping(y, out var o, out var step);
+            var i = y * SensorWidth * 3;
+            for (var x = 0; x < SensorWidth; x++, i += 3, o += step)
+            {
+                rgb[o + 0] = r[raw[i + 2] << 8];
+                rgb[o + 1] = g[raw[i + 1] << 8];
+                rgb[o + 2] = b[raw[i + 0] << 8];
+            }
         }
     }
 
     private void ProcessMono(ReadOnlySpan<ushort> src, byte[] rgb)
     {
         var g = _lut.G;
-        var n = Width * Height;
-        for (var i = 0; i < n; i++)
+        for (var y = 0; y < SensorHeight; y++)
         {
-            var v = g[src[i]];
-            var o = i * 3;
-            rgb[o] = v; rgb[o + 1] = v; rgb[o + 2] = v;
+            RowMapping(y, out var o, out var step);
+            var i = y * SensorWidth;
+            for (var x = 0; x < SensorWidth; x++, i++, o += step)
+            {
+                var v = g[src[i]];
+                rgb[o] = v; rgb[o + 1] = v; rgb[o + 2] = v;
+            }
         }
     }
 
     private unsafe void Debayer(ReadOnlySpan<ushort> src, byte[] rgb)
     {
-        int w = Width, h = Height;
+        int w = SensorWidth, h = SensorHeight;
 
         fixed (ushort* sPin = src)
         fixed (byte* dPin = rgb)
@@ -129,11 +161,11 @@ internal sealed class FrameProcessor
                 var lbp = (byte*)lb;
 
                 var rowBase = y * w;
-                var outBase = rowBase * 3;
+                RowMapping(y, out var outOffset, out var outStep);
                 var yOdd = (y & 1) * 2;
                 var interiorRow = y > 0 && y < h - 1;
 
-                for (var x = 0; x < w; x++)
+                for (var x = 0; x < w; x++, outOffset += outStep)
                 {
                     int r, g, b;
                     int c = patp[yOdd + (x & 1)];
@@ -169,10 +201,9 @@ internal sealed class FrameProcessor
                         SampleClamped(sp, w, h, x, y, c, patp, yOdd, out r, out g, out b);
                     }
 
-                    var o = outBase + x * 3;
-                    dp[o + 0] = lrp[r];
-                    dp[o + 1] = lgp[g];
-                    dp[o + 2] = lbp[b];
+                    dp[outOffset + 0] = lrp[r];
+                    dp[outOffset + 1] = lgp[g];
+                    dp[outOffset + 2] = lbp[b];
                 }
             });
         }

@@ -132,6 +132,9 @@ internal sealed class CaptureEngine : IDisposable
     /// off inside the loop: the marker is decoration, and whatever goes wrong in it, the frame
     /// goes on without it.
     /// </summary>
+    /// <summary>Blurs out whatever the user has masked off, rebuilt only when the mask changes.</summary>
+    private readonly PierCam.Imaging.CensorMask _censor = new();
+
     public PierCam.Sky.TargetMarkerService? Marker { get; set; }
 
     /// <summary>
@@ -192,7 +195,10 @@ internal sealed class CaptureEngine : IDisposable
             cam.SetRoi(c.RoiWidth, c.RoiHeight, Math.Max(1, c.Binning), AsiImgType.Raw16);
 
         _camera = cam;
-        _processor = new FrameProcessor(cam.Width, cam.Height, descriptor.IsColor, descriptor.Bayer, cam.ImageType);
+        // The turn is baked in here, so everything downstream — preview, encoder, star
+        // detection, censor mask — works in one agreed set of coordinates.
+        _processor = new FrameProcessor(cam.Width, cam.Height, descriptor.IsColor, descriptor.Bayer,
+            cam.ImageType, c.Orientation);
         _analyzer = new AutoStretchAnalyzer(_processor);
         _smoothed.Reset();
 
@@ -288,6 +294,8 @@ internal sealed class CaptureEngine : IDisposable
                 IntervalSeconds = _settings.Session.IntervalSeconds,
                 CameraName = _camera.Descriptor.Name,
                 CameraSerial = _camera.SerialNumber,
+                OrientationQuarters = _processor.Orientation.Quarters,
+                OrientationMirror = _processor.Orientation.Mirror,
                 SensorTempStartC = _sensorTemp,
                 Status = SessionStatus.Recording
             };
@@ -497,7 +505,7 @@ internal sealed class CaptureEngine : IDisposable
                         : _settings.Camera.PreviewExposureSeconds);
 
                 sw.Restart();
-                var ok = Grab(camera, raw, exposure, ct);
+                var ok = Grab(camera, raw, exposure, FramePeriod(recording), ct);
                 if (ct.IsCancellationRequested) break;
 
                 if (!ok)
@@ -512,6 +520,19 @@ internal sealed class CaptureEngine : IDisposable
 
                 var stretch = ChooseStretch(raw, recording);
                 processor.Process(raw, work, stretch);
+
+                // Censoring comes first, so everything after it — the live view, the recording,
+                // the poster, a Discord still — sees the blurred frame and nothing can leak a
+                // name by being drawn from a copy taken earlier.
+                if (_settings.Censor.Enabled && _settings.Censor.Regions.Count > 0)
+                {
+                    try
+                    {
+                        _censor.Update(_settings.Censor.Regions, processor.Width, processor.Height, processor.Orientation);
+                        _censor.Apply(work, processor.Width, processor.Height);
+                    }
+                    catch (Exception ex) { App.Log(ex, "Censor"); }
+                }
 
                 if (autoExposing) StepAutoExposure(camera, recording);
 
@@ -632,11 +653,18 @@ internal sealed class CaptureEngine : IDisposable
         }
     }
 
-    private bool Grab(AsiCamera camera, byte[] raw, TimeSpan exposure, CancellationToken ct)
+    private bool Grab(AsiCamera camera, byte[] raw, TimeSpan exposure, TimeSpan period, CancellationToken ct)
     {
-        // Short exposures stream far more smoothly in video mode; long subs need snap mode so
-        // they can be cancelled the instant the user stops the session.
-        if (exposure <= TimeSpan.FromSeconds(1))
+        // Short exposures stream far more smoothly in video mode — but video mode means the
+        // camera streams *continuously*, and the SDK receives and copies every frame whether or
+        // not we ask for it. That is free when we are taking nearly all of them, and ruinous
+        // when we are not: a 12.6 MP sensor left streaming to feed a preview a frame and a half
+        // a second spends two cores delivering frames that are thrown away.
+        //
+        // So video mode is used only when the frames are actually wanted at close to the rate
+        // they arrive. Everything slower takes single exposures, which cost nothing between them.
+        var streaming = exposure <= TimeSpan.FromSeconds(1) && period <= TimeSpan.FromSeconds(0.5);
+        if (streaming)
         {
             camera.StartVideo();
             var waitMs = (int)Math.Max(500, exposure.TotalMilliseconds * 3 + 2000);
@@ -645,6 +673,18 @@ internal sealed class CaptureEngine : IDisposable
 
         camera.StopVideo();
         return camera.CaptureSnap(raw, exposure, ct);
+    }
+
+    /// <summary>How long until the next frame is wanted — the cadence Grab decides its mode from.</summary>
+    private TimeSpan FramePeriod(bool recording)
+    {
+        if (recording)
+        {
+            var interval = _settings.Session.IntervalSeconds;
+            return interval > 0 ? TimeSpan.FromSeconds(interval) : TimeSpan.Zero;
+        }
+        var fps = Math.Min(Math.Clamp(_settings.Camera.PreviewMaxFps, 0.5, 60.0), PreviewFpsCeiling());
+        return TimeSpan.FromSeconds(1.0 / Math.Max(0.01, fps));
     }
 
     /// <summary>
@@ -739,10 +779,11 @@ internal sealed class CaptureEngine : IDisposable
         }
 
         session.Encoder.WriteFrame(rgb);
-        session.EstimatedRawBytes += processor.Width * (long)processor.Height * 2;
+        session.EstimatedRawBytes += processor.SensorWidth * (long)processor.SensorHeight * 2;
 
+        // The raw archive is the sensor's own data, untouched and unturned.
         if (_settings.Session.KeepRawFrames && processor.ImageType == AsiImgType.Raw16)
-            session.SaveRawFrame(raw, processor.Width, processor.Height);
+            session.SaveRawFrame(raw, processor.SensorWidth, processor.SensorHeight);
 
         // Poster refreshes on powers of two, so the library gets a thumbnail within the first
         // minute and the final one always lands somewhere in the second half of the night.
@@ -795,6 +836,24 @@ internal sealed class CaptureEngine : IDisposable
     }
 
     /// <summary>
+    /// Pixels a second the live view is allowed to cost, whatever the camera.
+    ///
+    /// Every preview frame is debayered, stretched and measured for the auto-exposure, and all
+    /// three scale with the sensor. Ten frames a second of a 2 MP camera is 20 MP/s and idles;
+    /// the same setting on a 12.6 MP camera is 126 MP/s and eats three cores to show a sky that
+    /// changes over minutes. The frame rate is therefore capped by a pixel budget instead, so a
+    /// bigger camera costs no more than a small one. A 1920×1080 camera is unaffected — its
+    /// ceiling lands just under the ten a second it was already held to.
+    /// </summary>
+    private const double PreviewPixelsPerSecond = 20_000_000;
+
+    public double PreviewFpsCeiling()
+    {
+        var pixels = _processor is { } p ? p.Width * (double)p.Height : 0;
+        return pixels <= 0 ? 60 : Math.Clamp(PreviewPixelsPerSecond / pixels, 0.5, 60);
+    }
+
+    /// <summary>
     /// Holds the cadence on an absolute schedule rather than sleeping a fixed amount after each
     /// frame, so a slow readout does not slowly drag the whole night out of step.
     /// </summary>
@@ -807,7 +866,7 @@ internal sealed class CaptureEngine : IDisposable
             // over minutes. Sleeping here also keeps the capture thread off the core the
             // encoder wants during a session.
             _nextDue = null;
-            var maxFps = Math.Clamp(_settings.Camera.PreviewMaxFps, 0.5, 60.0);
+            var maxFps = Math.Min(Math.Clamp(_settings.Camera.PreviewMaxFps, 0.5, 60.0), PreviewFpsCeiling());
             var minPeriodMs = 1000.0 / maxFps;
             var spentMs = _lastFrameSeconds * 1000.0;
             var restMs = (int)(minPeriodMs - spentMs);

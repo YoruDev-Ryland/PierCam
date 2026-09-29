@@ -102,6 +102,60 @@ internal sealed class LensModel
         return m;
     }
 
+    /// <summary>
+    /// The same calibration seen through a turned frame.
+    ///
+    /// Turning the camera in software does not move the lens, so the calibration is still true —
+    /// it is only described in the wrong coordinates. Rather than making the user wait for
+    /// another clear night, the numbers are carried across.
+    ///
+    /// Projection is <c>x = Cx + r·cos(phi − roll)</c>, <c>y = Cy + parity·r·sin(phi − roll)</c>.
+    /// Substituting each turn into that and matching terms gives the three primitives below; a
+    /// mirror is the one that flips parity, and it turns the roll back on itself, which is why
+    /// the quarter turns carry the parity in their sign.
+    /// </summary>
+    public LensModel TurnedBy(PierCam.Imaging.FrameOrientation from, PierCam.Imaging.FrameOrientation to)
+    {
+        if (from == to) return this;
+        var m = Clone();
+
+        // Back to the sensor's own frame, then forward into the new one.
+        var undo = from.Inverse();
+        if (from.Mirror)
+        {
+            // Its own inverse: undo the quarter turns first, then unmirror.
+            for (var i = 0; i < (4 - from.Quarters) % 4; i++) m.RotateQuarter();
+            m.MirrorX();
+        }
+        else
+        {
+            for (var i = 0; i < undo.Quarters; i++) m.RotateQuarter();
+        }
+
+        if (to.Mirror) m.MirrorX();
+        for (var i = 0; i < to.Quarters; i++) m.RotateQuarter();
+        m.Normalise();
+        return m;
+    }
+
+    /// <summary>One quarter turn clockwise: the frame's width and height swap with it.</summary>
+    private void RotateQuarter()
+    {
+        var cx = Cx;
+        Cx = Height - 1 - Cy;
+        Cy = cx;
+        Roll -= Parity * 90;
+        (Width, Height) = (Height, Width);
+    }
+
+    /// <summary>A mirror about the vertical axis, which is what makes an image left-handed.</summary>
+    private void MirrorX()
+    {
+        Cx = Width - 1 - Cx;
+        Roll -= 180;
+        Parity = -Parity;
+    }
+
     [JsonIgnore]
     public bool IsUsable =>
         double.IsFinite(AxisAlt) && double.IsFinite(AxisAz) && double.IsFinite(Roll) && double.IsFinite(F) &&

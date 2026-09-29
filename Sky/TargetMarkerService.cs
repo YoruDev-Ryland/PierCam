@@ -58,14 +58,13 @@ internal sealed class TargetMarkerService : IDisposable
     private sealed record ScaledLens(int Width, int Height, LensModel Lens);
     private sealed record ColorRgb(byte R, byte G, byte B);
 
-    // Live collection when the library could not help, and the nightly check.
+    // Live collection, when the library could not help.
     private readonly List<(DateTime utc, int w, int h, List<DetectedStar> stars)> _tonight = new();
     private DateTime _lastLiveFrame = DateTime.MinValue;
-    private DateTime? _checkedNight;
-    private bool _checking;
 
-    /// <summary>Consecutive failed nightly checks. Two in a row before a calibration is discarded.</summary>
-    private int _checkStrikes;
+    /// <summary>Clear frames collected so far, and how many there were at the last failed solve.</summary>
+    private int _clearFrames;
+    private int _clearFramesAtLastTry = -1;
 
     public TargetMarkerService(AppSettings settings, Func<(string? serial, int width, int height)> camera, Action<Action> onUi)
     {
@@ -148,9 +147,34 @@ internal sealed class TargetMarkerService : IDisposable
     }
 
     /// <summary>Throw away the current calibration and work it out again.</summary>
+    /// <summary>
+    /// The camera has been physically moved. Every night recorded before now shows the sky from
+    /// the old pointing, so they are set aside; the calibration comes from the next dark sky.
+    /// </summary>
+    public void CameraWasMoved()
+    {
+        _onUi(() =>
+        {
+            _settings.TargetMarker.CameraMovedUtc = DateTime.UtcNow;
+            _settings.TargetMarker.Calibration = null;
+            _settings.TargetMarker.LastFailedSearch = null;
+            _settings.Save();
+        });
+        _lens = null; _scaled = null;
+        lock (_tonight) _tonight.Clear();
+        WaitForTonight("Nights recorded before the move are set aside. It will learn from the sky once it is astronomically dark.");
+    }
+
     public void Recalibrate()
     {
-        _onUi(() => { _settings.TargetMarker.Calibration = null; _settings.Save(); });
+        // Asked for by hand, so it searches even if the same nights failed last time.
+        _forceSearch = true;
+        _onUi(() =>
+        {
+            _settings.TargetMarker.Calibration = null;
+            _settings.TargetMarker.LastFailedSearch = null;
+            _settings.Save();
+        });
         _lens = null; _scaled = null;
         lock (_tonight) _tonight.Clear();
         if (_settings.TargetMarker.Enabled && _settings.Site.IsSet) StartLibraryCalibration();
@@ -159,10 +183,25 @@ internal sealed class TargetMarkerService : IDisposable
 
     private void UseCalibration(LensCalibrationRecord rec)
     {
+        // Turning the camera in software does not move the lens, so a calibration solved before
+        // the turn is still true — it just describes the old frame. Carrying it across costs
+        // nothing and saves waiting for another clear night.
+        var now = _settings.Camera.Orientation;
+        var turned = string.Empty;
+        if (rec.Orientation != now && rec.Lens.IsUsable)
+        {
+            rec.Lens = rec.Lens.TurnedBy(rec.Orientation, now);
+            rec.OrientationQuarters = now.Quarters;
+            rec.OrientationMirror = now.Mirror;
+            App.Note($"Target marker: calibration carried into the turned frame ({now}); {rec.Lens}", "Marker");
+            _onUi(() => _settings.Save());
+            turned = " Carried across after the frame was turned.";
+        }
+
         _lens = rec.Lens; _scaled = null;
         var confirmed = rec.ConfirmedOn is null ? "" : $", confirmed on {rec.ConfirmedOn}";
         SetStatus(MarkerPhase.Calibrated, "Calibrated",
-            $"From {rec.Source}: {rec.Stars} stars matched, {rec.RmsPx:0.0} px{confirmed}.");
+            $"From {rec.Source}: {rec.Stars} stars matched, {rec.RmsPx:0.0} px{confirmed}.{turned}");
     }
 
     // ───────────────────────────── calibrating from the library ─────────────────────────────
@@ -178,6 +217,26 @@ internal sealed class TargetMarkerService : IDisposable
 
     private sealed record Night(TimelapseManifest M, int VideoW, int VideoH, int CameraW, int CameraH, Dictionary<int, DateTime>? ExactTimes);
 
+    /// <summary>Set by Recalibrate, so the user's own request always searches.</summary>
+    private bool _forceSearch;
+
+    /// <summary>How long one night gets to solve before it is judged cloudy. A clear one takes about a minute.</summary>
+    private static readonly TimeSpan SolveBudget = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// The newest nights only. A search is expensive, and if the two most recent nights from this
+    /// setup will not solve, older ones are no more likely to.
+    /// </summary>
+    private const int MaxNightsPerSearch = 2;
+
+    /// <summary>
+    /// What a search was given to work with. Two searches with the same signature would do the
+    /// same work and reach the same answer.
+    /// </summary>
+    private string SearchSignature(string? serial, List<Night> nights) =>
+        $"{serial}|{_settings.Camera.Orientation}|{nights.Count}|" +
+        string.Join(",", nights.Take(4).Select(n => System.IO.Path.GetFileName(n.M.FolderPath)));
+
     private void CalibrateFromLibrary(CancellationToken ct)
     {
         try
@@ -190,8 +249,20 @@ internal sealed class TargetMarkerService : IDisposable
                 return;
             }
 
+            // A blind solve runs two threads flat out for minutes. If the last search failed on
+            // exactly these nights with this camera and turn, running it again on every launch
+            // would cost the same minutes for the same answer — so it waits for something to
+            // change instead. Recalibrate forces it.
+            var signature = SearchSignature(cam.serial, nights);
+            if (!_forceSearch && _settings.TargetMarker.LastFailedSearch == signature)
+            {
+                WaitForTonight("The nights recorded so far did not give a solve. It will try again after the next one.");
+                return;
+            }
+            _forceSearch = false;
+
             string? lastReason = null;
-            for (var i = 0; i < Math.Min(4, nights.Count); i++)
+            for (var i = 0; i < Math.Min(MaxNightsPerSearch, nights.Count); i++)
             {
                 ct.ThrowIfCancellationRequested();
                 var night = nights[i];
@@ -200,9 +271,30 @@ internal sealed class TargetMarkerService : IDisposable
                 var frames = ReadFrames(night, 9, ct, n => SetStatus(MarkerPhase.Calibrating, $"Calibrating from {label}", $"Reading frames: {n} of 9"));
                 if (frames.Count < 3) { lastReason = $"{label}: not enough dark frames."; continue; }
 
-                var calibrator = new LensCalibrator(_settings.Site.Latitude, _settings.Site.Longitude, 2, ct, new SyncProgress(msg =>
-                    SetStatus(MarkerPhase.Calibrating, $"Calibrating from {label}", msg)), _scheduler);
-                var result = calibrator.Calibrate(frames);
+                // A clear night solves in about a minute. One that is still searching after a few
+                // is cloudy or barely open, and would otherwise run two cores for ten minutes to
+                // conclude so — which on the little PCs these scopes often run on is the whole
+                // machine.
+                CalibrationResult result;
+                using (var budget = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    budget.CancelAfter(SolveBudget);
+                    try
+                    {
+                        var solver = new LensCalibrator(_settings.Site.Latitude, _settings.Site.Longitude, 2, budget.Token,
+                            new SyncProgress(msg => SetStatus(MarkerPhase.Calibrating, $"Calibrating from {label}", msg)), _scheduler);
+                        result = solver.Calibrate(frames);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        lastReason = $"{label}: no solve within {SolveBudget.TotalMinutes:0} minutes, most likely cloud.";
+                        App.Note($"Target marker: gave up on {label} after {SolveBudget.TotalMinutes:0} minutes - most likely cloud", "Marker");
+                        continue;
+                    }
+                }
+
+                // Checking against another night is cheap and is not held to the solve's budget.
+                var calibrator = new LensCalibrator(_settings.Site.Latitude, _settings.Site.Longitude, 1, ct);
                 if (!result.Success || result.Lens is null)
                 {
                     lastReason = $"{label}: {result.Summary}";
@@ -215,6 +307,10 @@ internal sealed class TargetMarkerService : IDisposable
                 {
                     Lens = lens, CalibratedUtc = DateTime.UtcNow, Source = label,
                     CameraSerial = night.M.CameraSerial ?? string.Empty, Stars = result.Stars, RmsPx = Math.Round(result.RmsPx, 2),
+                    // Solved in the turn that night was recorded through; UseCalibration carries
+                    // it into the current one if the camera has been turned since.
+                    OrientationQuarters = night.M.OrientationQuarters,
+                    OrientationMirror = night.M.OrientationMirror,
                 };
 
                 // A second opinion from another night, if there is one: same camera, same answer.
@@ -225,7 +321,12 @@ internal sealed class TargetMarkerService : IDisposable
                     SetStatus(MarkerPhase.Calibrating, $"Calibrating from {label}", $"Confirming against {otherLabel}");
                     var check = ReadFrames(other, 3, ct, _ => { });
                     if (check.Count < 2) continue;
-                    var model = lens.ScaledTo(check[0].Width, check[0].Height);
+                    // The other night may have been recorded through a different turn of the
+                    // frame; compare like with like rather than calling it a disagreement.
+                    var inOther = lens.TurnedBy(
+                        new PierCam.Imaging.FrameOrientation(night.M.OrientationMirror, night.M.OrientationQuarters),
+                        new PierCam.Imaging.FrameOrientation(other.M.OrientationMirror, other.M.OrientationQuarters));
+                    var model = inOther.ScaledTo(check[0].Width, check[0].Height);
                     if (model is null) continue;
                     var (matched, rms) = calibrator.Check(model, check);
                     var perFrame = (double)result.Stars / Math.Max(1, result.Frames);
@@ -238,6 +339,10 @@ internal sealed class TargetMarkerService : IDisposable
                 UseCalibration(record);
                 return;
             }
+            // Nothing in the library worked. Remember what was tried, so the next launch does not
+            // spend the same minutes reaching the same conclusion.
+            var failed = SearchSignature(cam.serial, nights);
+            _onUi(() => { _settings.TargetMarker.LastFailedSearch = failed; _settings.Save(); });
             WaitForTonight(lastReason ?? "No earlier night could be used.");
         }
         catch (OperationCanceledException) { }
@@ -258,7 +363,7 @@ internal sealed class TargetMarkerService : IDisposable
 
     private void WaitForTonight(string why)
     {
-        lock (_tonight) _tonight.Clear();
+        lock (_tonight) { _tonight.Clear(); _clearFrames = 0; _clearFramesAtLastTry = -1; }
         SetStatus(MarkerPhase.WaitingForNight, "Waiting for a clear, dark night", why);
     }
 
@@ -268,6 +373,12 @@ internal sealed class TargetMarkerService : IDisposable
         whyNone = "There are no recorded nights to learn from yet.";
         var root = _settings.TimelapseRoot;
         if (!Directory.Exists(root)) return list;
+
+        // The sensor's own shape, with the current turn taken back off, so it can be compared
+        // with nights recorded through a different one.
+        var cam = _camera();
+        var (sensorW, sensorH) = _settings.Camera.Orientation.Swaps ? (cam.height, cam.width) : (cam.width, cam.height);
+        var moved = _settings.TargetMarker.CameraMovedUtc;
 
         var seen = 0;
         foreach (var dir in Directory.EnumerateDirectories(root))
@@ -282,6 +393,17 @@ internal sealed class TargetMarkerService : IDisposable
             if (string.IsNullOrWhiteSpace(m.CameraSerial)) continue;
             if (cameraSerial is not null && m.CameraSerial != cameraSerial) continue;
 
+            // Recorded before the camera was last moved: the right camera, pointed somewhere else.
+            if (moved is { } since && m.StartedLocal.ToUniversalTime() < since) continue;
+
+            // The same camera on a different frame — a crop, a binning, or a night recorded with
+            // the wrong shape — is not the frame the calibration would be used on.
+            if (sensorW > 0 && sensorH > 0)
+            {
+                var (nw, nh) = m.OrientationQuarters % 2 == 1 ? (m.Height, m.Width) : (m.Width, m.Height);
+                if (Math.Abs((double)nw / nh - (double)sensorW / sensorH) > 0.01) continue;
+            }
+
             var exact = ReadExactTimes(dir);
             // Without exact per-frame times, the times have to be reconstructed from the schedule,
             // which only holds for a night that ran without pauses or gaps.
@@ -291,7 +413,9 @@ internal sealed class TargetMarkerService : IDisposable
             list.Add(new Night(m, m.Width, m.Height, camW, camH, exact));
         }
         if (seen > 0 && list.Count == 0)
-            whyNone = "None of the recordings in the library can be used: they need to be complete PierCam nights from this camera, without pauses.";
+            whyNone = moved is not null
+                ? "No night has been recorded since the camera was moved. It will learn from the sky once it is astronomically dark."
+                : "None of the recordings in the library can be used: they need to be complete PierCam nights from this camera and frame, without pauses.";
         return list.OrderByDescending(n => n.M.StartedLocal).ToList();
     }
 
@@ -391,7 +515,9 @@ internal sealed class TargetMarkerService : IDisposable
                 if (_settings.Site.IsSet) _onUi(Apply);
                 return;
             }
-            _dark = SunCalculator.Altitude(DateTime.UtcNow, _settings.Site.Latitude, _settings.Site.Longitude) < -15;
+            // Astronomical dark only. Frames taken in twilight have a bright sky and few stars,
+            // and a solve attempted on them costs minutes of CPU to fail.
+            _dark = SunCalculator.Altitude(DateTime.UtcNow, _settings.Site.Latitude, _settings.Site.Longitude) < -18;
 
             // A different camera, or a different crop of this one, needs its own calibration.
             var cam = _camera();
@@ -402,12 +528,12 @@ internal sealed class TargetMarkerService : IDisposable
                 return;
             }
 
-            var tonight = SunCalculator.NightDateFor(DateTime.Now).Date;
-            var wantLive = _dark && (_phase is MarkerPhase.WaitingForNight or MarkerPhase.Collecting)
-                                 && DateTime.UtcNow - _lastLiveFrame > TimeSpan.FromMinutes(10);
-            var wantCheck = _dark && _phase == MarkerPhase.Calibrated && _checkedNight != tonight && !_checking
-                                  && DateTime.UtcNow - _lastLiveFrame > TimeSpan.FromMinutes(10);
-            _wantFrame = wantLive || wantCheck;
+            // Frames are only wanted while there is no calibration. A pier camera does not move,
+            // so once one is found it is held: re-checking it every night cost CPU and, on a
+            // cloudy or roof-shut night, threw good calibrations away. A camera that really has
+            // been moved is the user's to say so, with "Camera was moved".
+            _wantFrame = _dark && (_phase is MarkerPhase.WaitingForNight or MarkerPhase.Collecting)
+                               && DateTime.UtcNow - _lastLiveFrame > TimeSpan.FromMinutes(10);
             StatusChanged?.Invoke();
         }
         catch (Exception ex) { App.Log(ex, "Marker tick"); }
@@ -437,52 +563,14 @@ internal sealed class TargetMarkerService : IDisposable
             var small = StarDetector.Reduce(luma, w, h, k, out var rw, out var rh);
             var stars = StarDetector.Find(small, rw, rh);
 
-            if (_phase == MarkerPhase.Calibrated && _lens is { } lens)
-            {
-                // The nightly check: does the calibration still describe this sky?
-                _checking = true;
-                try
-                {
-                    _checkedNight = SunCalculator.NightDateFor(DateTime.Now).Date;
-                    var model = lens.ScaledTo(rw, rh);
-                    if (model is null || stars.Count < 150) return;           // cloudy: nothing to judge by
-
-                    // Not this camera's calibration, so it says nothing about whether the camera
-                    // moved. Swapping to another camera is a normal thing to do, and the tick
-                    // notices the serial change and recalibrates properly; judging the old lens
-                    // against a different sensor here would only throw a good answer away.
-                    var rec = _settings.TargetMarker.Calibration;
-                    var serial = _camera().serial;
-                    if (rec is not null && !string.IsNullOrEmpty(rec.CameraSerial) &&
-                        !string.IsNullOrEmpty(serial) && rec.CameraSerial != serial) return;
-
-                    var calibrator = new LensCalibrator(_settings.Site.Latitude, _settings.Site.Longitude, 1, CancellationToken.None);
-                    var (matched, rms) = calibrator.Check(model, new[] { new CalibrationFrame(utc, rw, rh, stars) });
-                    var expected = rec is null ? 60 : Math.Max(20, rec.Stars / 9.0);
-                    var failed = matched < expected * 0.25;
-                    App.Note($"Target marker nightly check: {matched} stars matched ({expected:0} expected), {rms:0.0} px" +
-                             (failed ? $" - strike {_checkStrikes + 1} of 2" : ""), "Marker");
-
-                    // Two strikes, because one bad look is usually the view and not the camera:
-                    // cloud thick enough to leave 150 detections, a roof in the way, someone
-                    // walking past with a torch. A camera that has actually moved fails every time.
-                    if (!failed) { _checkStrikes = 0; return; }
-                    if (++_checkStrikes < 2) return;
-
-                    _checkStrikes = 0;
-                    _lens = null; _scaled = null;
-                    lock (_tonight) _tonight.Clear();
-                    SetStatus(MarkerPhase.Collecting, "Recalibrating from tonight's sky",
-                        "The calibration no longer matches the stars - has the camera moved?");
-                }
-                finally { _checking = false; }
-                return;
-            }
+            // Already calibrated: nothing to learn. A pier camera does not move, so a calibration
+            // once found is held rather than second-guessed night after night.
+            if (_phase == MarkerPhase.Calibrated) return;
 
             List<(DateTime utc, int w, int h, List<DetectedStar> stars)> snapshot;
             lock (_tonight)
             {
-                if (stars.Count >= 40) _tonight.Add((utc, rw, rh, stars));
+                if (stars.Count >= 40) { _tonight.Add((utc, rw, rh, stars)); _clearFrames++; }
                 while (_tonight.Count > 9) _tonight.RemoveAt(0);
                 snapshot = _tonight.ToList();
             }
@@ -494,17 +582,42 @@ internal sealed class TargetMarkerService : IDisposable
                 return;
             }
 
+            // After a failed attempt, wait for half an hour of new sky before trying again. Retrying
+            // on every frame of a cloudy night would run a full solve every ten minutes till dawn.
+            if (_clearFramesAtLastTry >= 0 && _clearFrames - _clearFramesAtLastTry < 3)
+            {
+                SetStatus(MarkerPhase.Collecting, "Learning from tonight's sky",
+                    $"Waiting for more clear sky before trying again ({_clearFrames - _clearFramesAtLastTry} of 3 new frames).");
+                return;
+            }
+            _clearFramesAtLastTry = _clearFrames;
+
             SetStatus(MarkerPhase.Calibrating, "Calibrating from tonight's sky", "Searching for the camera's orientation");
             var list = snapshot.Select(s => (s.utc, stars: s.stars.ToList())).ToList();
             StarDetector.DropStatic(list);
             var frames = list.Select((s, i) => new CalibrationFrame(s.utc, snapshot[i].w, snapshot[i].h, s.stars)).ToList();
-            var cal = new LensCalibrator(_settings.Site.Latitude, _settings.Site.Longitude, 2, CancellationToken.None,
-                new SyncProgress(msg => SetStatus(MarkerPhase.Calibrating, "Calibrating from tonight's sky", msg)), _scheduler);
-            var result = cal.Calibrate(frames);
+
+            CalibrationResult result;
+            using (var budget = new CancellationTokenSource(SolveBudget))
+            {
+                try
+                {
+                    var cal = new LensCalibrator(_settings.Site.Latitude, _settings.Site.Longitude, 2, budget.Token,
+                        new SyncProgress(msg => SetStatus(MarkerPhase.Calibrating, "Calibrating from tonight's sky", msg)), _scheduler);
+                    result = cal.Calibrate(frames);
+                }
+                catch (OperationCanceledException)
+                {
+                    ReturnScratchMemory();
+                    SetStatus(MarkerPhase.Collecting, "Learning from tonight's sky",
+                        $"No solve within {SolveBudget.TotalMinutes:0} minutes — too much cloud so far. Trying again after more sky.");
+                    return;
+                }
+            }
             ReturnScratchMemory();
             if (!result.Success || result.Lens is null)
             {
-                SetStatus(MarkerPhase.Collecting, "Learning from tonight's sky", $"Not yet: {result.Summary} Trying again with the next frame.");
+                SetStatus(MarkerPhase.Collecting, "Learning from tonight's sky", $"Not yet: {result.Summary} Trying again after more sky.");
                 return;
             }
             var cam = _camera();
@@ -513,6 +626,9 @@ internal sealed class TargetMarkerService : IDisposable
             {
                 Lens = full, CalibratedUtc = DateTime.UtcNow, Source = "tonight's sky",
                 CameraSerial = cam.serial ?? string.Empty, Stars = result.Stars, RmsPx = Math.Round(result.RmsPx, 2),
+                // Live frames already come through turned, so this is solved in the current one.
+                OrientationQuarters = _settings.Camera.Orientation.Quarters,
+                OrientationMirror = _settings.Camera.Orientation.Mirror,
             };
             App.Note($"Target marker calibrated from tonight's sky: {result.Summary}; {full}", "Marker");
             _onUi(() => { _settings.TargetMarker.Calibration = record; _settings.Save(); });

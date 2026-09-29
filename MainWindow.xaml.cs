@@ -240,6 +240,24 @@ public partial class MainWindow : Window
 
         BuildResolutionOptions();
 
+        PreviewFpsCombo.ItemsSource = new[]
+        {
+            new Option<double>("1 FRAME A SECOND", 1),
+            new Option<double>("2 A SECOND", 2),
+            new Option<double>("5 A SECOND", 5),
+            new Option<double>("10 A SECOND — DEFAULT", 10),
+            new Option<double>("15 A SECOND", 15),
+            new Option<double>("30 A SECOND", 30),
+        };
+
+        RotateCombo.ItemsSource = new[]
+        {
+            new Option<int>("AS IT COMES", 0),
+            new Option<int>("90° CLOCKWISE", 90),
+            new Option<int>("180°", 180),
+            new Option<int>("270° CLOCKWISE", 270),
+        };
+
         PresetCombo.ItemsSource = new[]
         {
             new Option<string>("VERY FAST", "veryfast"),
@@ -407,6 +425,10 @@ public partial class MainWindow : Window
         LoadMarkerIntoUi();
         LoadUpdatesIntoUi();
         LoadDiscordIntoUi();
+        LoadOrientationIntoUi();
+        LoadCensorIntoUi();
+        UpdateCensorUi();
+        LoadPreviewFpsIntoUi();
         UpdateSliderLabels();
         UpdateScheduleUi();
         UpdateAutoExposureHint();
@@ -1012,6 +1034,7 @@ public partial class MainWindow : Window
             BuildResolutionOptions();
             _loading = reloading;
             UpdatePlan();
+            UpdatePreviewFpsHint();
         }
         catch (Exception ex)
         {
@@ -1044,6 +1067,7 @@ public partial class MainWindow : Window
         BuildResolutionOptions();
         _loading = wasLoading;
         UpdatePlan();
+        UpdatePreviewFpsHint();
         UpdateStatusBar();
     }
 
@@ -3227,6 +3251,394 @@ public partial class MainWindow : Window
         _settings.Save();
     }
 
+    // ══════════════════════ orientation ══════════════════════
+
+    private void LoadOrientationIntoUi()
+    {
+        SelectOption(RotateCombo, ((_settings.Camera.RotateDegrees / 90) % 4 + 4) % 4 * 90);
+        FlipHorizontalCheck.IsChecked = _settings.Camera.FlipHorizontal;
+        FlipVerticalCheck.IsChecked = _settings.Camera.FlipVertical;
+        UpdateOrientationHint();
+    }
+
+    /// <summary>
+    /// Turning the frame changes the size of everything downstream, including the encoder's
+    /// input, so it re-opens the camera — which a recording cannot survive, hence the refusal.
+    /// </summary>
+    private void OnOrientationChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+
+        if (_engine.IsRecording)
+        {
+            MessageBox.Show(this,
+                "A night is recording. Turning the frame changes every frame's size, so it waits until the session is finished.",
+                "Recording in progress", MessageBoxButton.OK, MessageBoxImage.Information);
+            _loading = true;
+            LoadOrientationIntoUi();
+            _loading = false;
+            return;
+        }
+
+        var c = _settings.Camera;
+        c.RotateDegrees = Selected(RotateCombo, 0);
+        c.FlipHorizontal = FlipHorizontalCheck.IsChecked == true;
+        c.FlipVertical = FlipVerticalCheck.IsChecked == true;
+        _settings.Save();
+        UpdateOrientationHint();
+
+        // Re-open so the processor, its buffers and the preview all agree on the new size.
+        if (IsConnected)
+        {
+            Disconnect();
+            Connect();
+        }
+
+        // The calibration is still true, only described in the old frame; the marker carries it
+        // across the moment it is applied.
+        _marker.Apply();
+        UpdateMarkerUi();
+        UpdateCensorUi();
+        RedrawCensorOverlay();
+    }
+
+    private void UpdateOrientationHint()
+    {
+        var o = _settings.Camera.Orientation;
+        int w = _engine.Width, h = _engine.Height;
+        var size = w > 0 && h > 0 ? $" FRAMES ARE {w}×{h}." : string.Empty;
+        OrientationHint.Text = o.IsIdentity
+            ? "THE FRAME IS USED AS THE CAMERA DELIVERS IT." + size
+            : $"THE FRAME IS TURNED: {o.ToString().ToUpperInvariant()}.{size} THE STAR CALIBRATION FOLLOWS IT.";
+    }
+
+    // ══════════════════════ censor ══════════════════════
+    //
+    // The mask is drawn on the live view, because that is the only place the thing being hidden
+    // can be seen. Points are kept against the sensor rather than the displayed frame, so turning
+    // the camera carries the mask with whatever it covers; the conversion happens on the way in
+    // and out of this editor.
+
+    private bool _censorEditing;
+    private string? _censorSnapshot;     // settings as they were, for Cancel
+    private int _draggingPoint = -1;
+    private int _draggingRegion = -1;
+
+    /// <summary>Radius of a point's grab area, in canvas pixels.</summary>
+    private const double PointGrab = 11;
+
+    private List<Models.CensorRegion> Regions => _settings.Censor.Regions;
+
+    private void OnCensorEdit(object sender, RoutedEventArgs e)
+    {
+        if (!IsConnected)
+        {
+            MessageBox.Show(this, "Connect the camera first — the mask is drawn on the live view.",
+                "Nothing to draw on", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _censorSnapshot = System.Text.Json.JsonSerializer.Serialize(_settings.Censor.Regions);
+        _censorEditing = true;
+        if (Regions.Count == 0) Regions.Add(new Models.CensorRegion());
+
+        NavLive.IsChecked = true;
+        CensorCanvas.Visibility = Visibility.Visible;
+        CensorBar.Visibility = Visibility.Visible;
+        UpdateCensorUi();
+        RedrawCensorOverlay();
+        // After a layout pass, so the bar's own size is known and it can be clamped properly.
+        Dispatcher.BeginInvoke(PlaceCensorBar, DispatcherPriority.Loaded);
+    }
+
+    private void OnCensorDone(object sender, RoutedEventArgs e) => EndCensorEditing(keep: true);
+    private void OnCensorCancel(object sender, RoutedEventArgs e) => EndCensorEditing(keep: false);
+
+    private void EndCensorEditing(bool keep)
+    {
+        if (!keep && _censorSnapshot is not null)
+        {
+            var restored = System.Text.Json.JsonSerializer.Deserialize<List<Models.CensorRegion>>(_censorSnapshot);
+            _settings.Censor.Regions = restored ?? new List<Models.CensorRegion>();
+        }
+
+        // An area with fewer than three points is not a shape; drop it rather than keep a stub.
+        _settings.Censor.Regions.RemoveAll(r => r.Points.Count < 3);
+
+        _censorEditing = false;
+        _censorSnapshot = null;
+        _draggingPoint = _draggingRegion = -1;
+        CensorCanvas.Visibility = Visibility.Collapsed;
+        CensorBar.Visibility = Visibility.Collapsed;
+        CensorCanvas.Children.Clear();
+        _settings.Save();
+        UpdateCensorUi();
+    }
+
+    private void OnCensorNewArea(object sender, RoutedEventArgs e)
+    {
+        Regions.RemoveAll(r => r.Points.Count < 3);
+        Regions.Add(new Models.CensorRegion());
+        RedrawCensorOverlay();
+        UpdateCensorUi();
+    }
+
+    private void OnCensorUndoPoint(object sender, RoutedEventArgs e)
+    {
+        var last = Regions.LastOrDefault(r => r.Points.Count > 0);
+        if (last is null) return;
+        last.Points.RemoveAt(last.Points.Count - 1);
+        RedrawCensorOverlay();
+        UpdateCensorUi();
+    }
+
+    private void OnCensorClearAll(object sender, RoutedEventArgs e)
+    {
+        Regions.Clear();
+        Regions.Add(new Models.CensorRegion());
+        RedrawCensorOverlay();
+        UpdateCensorUi();
+    }
+
+    /// <summary>
+    /// Where the displayed picture actually sits inside the viewport. The image is letterboxed by
+    /// Stretch="Uniform", so the canvas is larger than the picture on one axis and clicks have to
+    /// be measured against the picture, not the control.
+    /// </summary>
+    private bool PictureRect(out double left, out double top, out double scale)
+    {
+        left = top = 0; scale = 1;
+        int w = _engine.Width, h = _engine.Height;
+        if (w <= 0 || h <= 0 || CensorCanvas.ActualWidth <= 0 || CensorCanvas.ActualHeight <= 0) return false;
+        scale = Math.Min(CensorCanvas.ActualWidth / w, CensorCanvas.ActualHeight / h);
+        left = (CensorCanvas.ActualWidth - w * scale) / 2;
+        top = (CensorCanvas.ActualHeight - h * scale) / 2;
+        return true;
+    }
+
+    /// <summary>A click in the viewport, as a point on the sensor (0..1), or null if off-picture.</summary>
+    private Models.CensorPoint? ToSensorPoint(Point p)
+    {
+        if (!PictureRect(out var left, out var top, out var scale)) return null;
+        int w = _engine.Width, h = _engine.Height;
+        var fx = (p.X - left) / scale;
+        var fy = (p.Y - top) / scale;
+        if (fx < 0 || fy < 0 || fx > w || fy > h) return null;
+
+        // Out of the turned frame and back onto the sensor.
+        var (ux, uy) = _settings.Camera.Orientation.Inverse().MapUnit(fx / w, fy / h);
+        return new Models.CensorPoint { X = Math.Clamp(ux, 0, 1), Y = Math.Clamp(uy, 0, 1) };
+    }
+
+    /// <summary>The reverse: a stored point as a position in the viewport.</summary>
+    private Point ToCanvasPoint(Models.CensorPoint p)
+    {
+        PictureRect(out var left, out var top, out var scale);
+        var (ux, uy) = _settings.Camera.Orientation.MapUnit(p.X, p.Y);
+        return new Point(left + ux * _engine.Width * scale, top + uy * _engine.Height * scale);
+    }
+
+    private void OnCensorMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!_censorEditing) return;
+        var at = e.GetPosition(CensorCanvas);
+
+        // On an existing point: take hold of it rather than adding another on top.
+        if (FindPointNear(at) is var (region, index) && index >= 0)
+        {
+            _draggingRegion = region;
+            _draggingPoint = index;
+            CensorCanvas.CaptureMouse();
+            return;
+        }
+
+        if (ToSensorPoint(at) is not { } point) return;
+        var target = Regions.LastOrDefault() ?? AddRegion();
+        target.Points.Add(point);
+        RedrawCensorOverlay();
+        UpdateCensorUi();
+    }
+
+    private Models.CensorRegion AddRegion()
+    {
+        var r = new Models.CensorRegion();
+        Regions.Add(r);
+        return r;
+    }
+
+    private void OnCensorMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_censorEditing || _draggingPoint < 0) return;
+        if (ToSensorPoint(e.GetPosition(CensorCanvas)) is not { } point) return;
+        Regions[_draggingRegion].Points[_draggingPoint] = point;
+        RedrawCensorOverlay();
+    }
+
+    private void OnCensorMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_draggingPoint < 0) return;
+        _draggingPoint = _draggingRegion = -1;
+        CensorCanvas.ReleaseMouseCapture();
+        _settings.Save();
+    }
+
+    private void OnCensorRightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (!_censorEditing) return;
+        var (region, index) = FindPointNear(e.GetPosition(CensorCanvas));
+        if (index < 0) return;
+        Regions[region].Points.RemoveAt(index);
+        RedrawCensorOverlay();
+        UpdateCensorUi();
+        e.Handled = true;
+    }
+
+    private (int Region, int Index) FindPointNear(Point at)
+    {
+        for (var r = 0; r < Regions.Count; r++)
+            for (var i = 0; i < Regions[r].Points.Count; i++)
+            {
+                var p = ToCanvasPoint(Regions[r].Points[i]);
+                if ((p - at).Length <= PointGrab) return (r, i);
+            }
+        return (-1, -1);
+    }
+
+    private void OnCensorCanvasResized(object sender, SizeChangedEventArgs e)
+    {
+        RedrawCensorOverlay();
+        PlaceCensorBar();
+    }
+
+    // ── the editor's toolbar ────────────────────────────────────────────────
+    //
+    // It has to sit over the picture, and the picture is the thing being worked on, so wherever
+    // it starts it will be in the way of someone's mask. Rather than guess at a corner that is
+    // always free, it is draggable and remembers where it was put.
+
+    private bool _barDragging;
+    private Point _barGrab;
+
+    private void OnCensorBarDragStart(object sender, MouseButtonEventArgs e)
+    {
+        // A click that began on a button never reaches here — the button marks it handled — so
+        // the controls keep working and the plate around them is the handle.
+        _barDragging = true;
+        _barGrab = e.GetPosition(CensorBar);
+        CensorBar.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void OnCensorBarDrag(object sender, MouseEventArgs e)
+    {
+        if (!_barDragging) return;
+        var at = e.GetPosition(CensorCanvas);
+        SetCensorBar(at.X - _barGrab.X, at.Y - _barGrab.Y);
+    }
+
+    private void OnCensorBarDragEnd(object sender, MouseButtonEventArgs e)
+    {
+        if (!_barDragging) return;
+        _barDragging = false;
+        CensorBar.ReleaseMouseCapture();
+        _settings.Save();
+    }
+
+    /// <summary>Puts the toolbar at a pixel position, clamped inside the viewport, and remembers it.</summary>
+    private void SetCensorBar(double left, double top)
+    {
+        double cw = CensorCanvas.ActualWidth, ch = CensorCanvas.ActualHeight;
+        if (cw <= 0 || ch <= 0) return;
+        var bw = CensorBar.ActualWidth > 0 ? CensorBar.ActualWidth : 360;
+        var bh = CensorBar.ActualHeight > 0 ? CensorBar.ActualHeight : 90;
+
+        left = Math.Clamp(left, 0, Math.Max(0, cw - bw));
+        top = Math.Clamp(top, 0, Math.Max(0, ch - bh));
+        CensorBar.Margin = new Thickness(left, top, 0, 0);
+
+        // Kept as a fraction, so it lands in the same place on a window of a different size.
+        _settings.Censor.ToolbarX = cw > bw ? left / (cw - bw) : 0;
+        _settings.Censor.ToolbarY = ch > bh ? top / (ch - bh) : 0;
+    }
+
+    /// <summary>Restores the remembered position, or centres it along the top the first time.</summary>
+    private void PlaceCensorBar()
+    {
+        if (CensorBar.Visibility != Visibility.Visible) return;
+        double cw = CensorCanvas.ActualWidth, ch = CensorCanvas.ActualHeight;
+        if (cw <= 0 || ch <= 0) return;
+        var bw = CensorBar.ActualWidth > 0 ? CensorBar.ActualWidth : 360;
+        var bh = CensorBar.ActualHeight > 0 ? CensorBar.ActualHeight : 90;
+
+        var x = Math.Clamp(_settings.Censor.ToolbarX, 0, 1) * Math.Max(0, cw - bw);
+        var y = Math.Clamp(_settings.Censor.ToolbarY, 0, 1) * Math.Max(0, ch - bh);
+        CensorBar.Margin = new Thickness(x, y, 0, 0);
+    }
+
+    /// <summary>Draws the outline and its handles over the live view.</summary>
+    private void RedrawCensorOverlay()
+    {
+        CensorCanvas.Children.Clear();
+        if (!_censorEditing) return;
+
+        var accent = (Brush)FindResource("Accent");
+        foreach (var region in Regions)
+        {
+            if (region.Points.Count >= 2)
+            {
+                var shape = new System.Windows.Shapes.Polygon
+                {
+                    Stroke = accent,
+                    StrokeThickness = 1.5,
+                    StrokeDashArray = new DoubleCollection { 4, 3 },
+                    Fill = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                    IsHitTestVisible = false
+                };
+                foreach (var p in region.Points) shape.Points.Add(ToCanvasPoint(p));
+                CensorCanvas.Children.Add(shape);
+            }
+
+            for (var i = 0; i < region.Points.Count; i++)
+            {
+                var at = ToCanvasPoint(region.Points[i]);
+                var dot = new System.Windows.Shapes.Ellipse
+                {
+                    Width = 11, Height = 11,
+                    Fill = accent,
+                    Stroke = Brushes.Black,
+                    StrokeThickness = 1,
+                    IsHitTestVisible = false
+                };
+                Canvas.SetLeft(dot, at.X - 5.5);
+                Canvas.SetTop(dot, at.Y - 5.5);
+                CensorCanvas.Children.Add(dot);
+            }
+        }
+    }
+
+    private void LoadCensorIntoUi() => CensorEnabledCheck.IsChecked = _settings.Censor.Enabled;
+
+    private void OnCensorSettingsChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _settings.Censor.Enabled = CensorEnabledCheck.IsChecked == true;
+        _settings.Save();
+        UpdateCensorUi();
+    }
+
+    private void UpdateCensorUi()
+    {
+        var areas = Regions.Count(r => r.Points.Count >= 3);
+        var points = Regions.Sum(r => r.Points.Count);
+        CensorSummary.Text = areas == 0
+            ? (points > 0 ? $"{points} POINT{(points == 1 ? "" : "S")} — THREE MAKE AN AREA" : "NOTHING MASKED YET")
+            : $"{areas} AREA{(areas == 1 ? "" : "S")} · {points} POINTS";
+        CensorEditButton.IsEnabled = !_censorEditing;
+        if (_censorEditing) CensorHint.Text = points < 3
+            ? "CLICK TO ADD POINTS · THREE MAKE AN AREA"
+            : "CLICK TO ADD · DRAG A POINT TO MOVE IT · RIGHT-CLICK ONE TO REMOVE IT";
+    }
+
     // ══════════════════════ discord ══════════════════════
 
     /// <summary>
@@ -3509,6 +3921,54 @@ public partial class MainWindow : Window
         UpdateMarkerUi();
     }
 
+    /// <summary>
+    /// The one thing PierCam cannot see for itself: the camera has been bumped or re-aimed.
+    /// Nights recorded before it are set aside, since they show the sky from the old pointing.
+    /// </summary>
+    private void OnMarkerCameraMoved(object sender, RoutedEventArgs e)
+    {
+        if (!Dialogs.Confirm(this, "Camera was moved",
+                "Every night recorded before now will be set aside for calibration, since it shows the sky from the old pointing. " +
+                "The current calibration is discarded, and a new one is learned from the next astronomically dark sky.\n\n" +
+                "Your recordings themselves are not touched.",
+                confirmText: "SET ASIDE"))
+            return;
+        _marker.CameraWasMoved();
+        UpdateMarkerUi();
+    }
+
+    // ══════════════════════ live view rate ══════════════════════
+
+    private void LoadPreviewFpsIntoUi()
+    {
+        var fps = _settings.Camera.PreviewMaxFps;
+        var options = (IEnumerable<Option<double>>)PreviewFpsCombo.ItemsSource;
+        var nearest = options.OrderBy(o => Math.Abs(o.Value - fps)).First();
+        PreviewFpsCombo.SelectedItem = nearest;
+        UpdatePreviewFpsHint();
+    }
+
+    private void OnPreviewFpsChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading) return;
+        _settings.Camera.PreviewMaxFps = Selected(PreviewFpsCombo, 10.0);
+        _settings.Save();
+        UpdatePreviewFpsHint();
+    }
+
+    /// <summary>Says what the live view will actually run at, which on a large sensor is less.</summary>
+    private void UpdatePreviewFpsHint()
+    {
+        var wanted = _settings.Camera.PreviewMaxFps;
+        var ceiling = _engine.PreviewFpsCeiling();
+        int w = _engine.Width, h = _engine.Height;
+        if (w > 0 && h > 0 && ceiling < wanted)
+            PreviewFpsHint.Text = $"THIS {w * (double)h / 1e6:0.#} MP CAMERA IS HELD TO {ceiling:0.#} A SECOND TO SPARE THE CPU. " +
+                                  "A LONG SUB IS SLOWER STILL.";
+        else
+            PreviewFpsHint.Text = "AT MOST. A LONG SUB IS SLOWER STILL, AND FEWER FRAMES IS LESS CPU.";
+    }
+
     /// <summary>The marker is drawn in the palette's accent, so it matches the rest of the app.</summary>
     private void UpdateMarkerColor()
     {
@@ -3537,5 +3997,6 @@ public partial class MainWindow : Window
         MarkerKeepOriginalCheck.IsEnabled = on && _settings.TargetMarker.BurnIntoRecordings;
         MarkerRecalibrateButton.IsEnabled = on && _settings.Site.IsSet
                                              && phase is not (Sky.MarkerPhase.Searching or Sky.MarkerPhase.Calibrating);
+        MarkerMovedButton.IsEnabled = on;
     }
 }

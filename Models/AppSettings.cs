@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -82,6 +83,19 @@ internal sealed class CameraSettings
     public int RoiWidth { get; set; }
     public int RoiHeight { get; set; }
     public int Binning { get; set; } = 1;
+
+    /// <summary>
+    /// How the frame is turned before anything else sees it — for a camera that could only be
+    /// bolted on sideways, or upside down. Quarter turns clockwise, and the flips are applied
+    /// before the turn.
+    /// </summary>
+    public int RotateDegrees { get; set; }
+    public bool FlipHorizontal { get; set; }
+    public bool FlipVertical { get; set; }
+
+    [JsonIgnore]
+    public PierCam.Imaging.FrameOrientation Orientation =>
+        PierCam.Imaging.FrameOrientation.From(RotateDegrees, FlipHorizontal, FlipVertical);
 }
 
 internal sealed class StretchSettings
@@ -267,6 +281,41 @@ internal sealed class HousekeepingSettings
 /// The marker showing where the telescope is pointing. Off by default: it needs N.I.N.A. and a
 /// calibration, and a feature that has neither must not appear to do anything.
 /// </summary>
+/// <summary>A point on the sensor, 0..1, so it survives a change of resolution or frame turn.</summary>
+internal sealed class CensorPoint
+{
+    public double X { get; set; }
+    public double Y { get; set; }
+}
+
+/// <summary>One area to blur out, as the polygon through its points.</summary>
+internal sealed class CensorRegion
+{
+    public List<CensorPoint> Points { get; set; } = new();
+}
+
+/// <summary>
+/// Blurring parts of every frame — a name taped to a pier, usually. See
+/// <see cref="PierCam.Imaging.CensorMask"/>.
+/// </summary>
+internal sealed class CensorSettings
+{
+    /// <summary>
+    /// Off unless asked for. This alters the recording itself: the blur is burned into the
+    /// frames, and there is no undoing it afterwards.
+    /// </summary>
+    public bool Enabled { get; set; }
+
+    public List<CensorRegion> Regions { get; set; } = new();
+
+    /// <summary>
+    /// Where the editor's own toolbar sits, as a fraction of the viewport, so it stays out of the
+    /// way of whatever is being masked — and stays there next time.
+    /// </summary>
+    public double ToolbarX { get; set; } = 0.5;
+    public double ToolbarY { get; set; } = 0.02;
+}
+
 /// <summary>
 /// Posting the night to a Discord channel through a webhook. See <see cref="PierCam.Net.DiscordPoster"/>.
 /// </summary>
@@ -341,6 +390,22 @@ internal sealed class TargetMarkerSettings
     public string NinaApiUrl { get; set; } = "http://localhost:1888";
 
     public LensCalibrationRecord? Calibration { get; set; }
+
+    /// <summary>
+    /// What the last unsuccessful search through the library was given to work with: the camera,
+    /// the frame turn, and which nights existed. Searching is expensive — a blind solve runs two
+    /// threads flat out for minutes — and repeating it against the very same nights on every
+    /// launch buys nothing. It is tried again when the inputs change: another night recorded, a
+    /// different camera, a turn of the frame, or the user pressing Recalibrate.
+    /// </summary>
+    public string? LastFailedSearch { get; set; }
+
+    /// <summary>
+    /// When the camera was last physically moved, as far as PierCam was told. Nights recorded
+    /// before it show the sky from a different pointing, and a calibration solved from them would
+    /// be confidently wrong, so the library search ignores them.
+    /// </summary>
+    public DateTime? CameraMovedUtc { get; set; }
 }
 
 /// <summary>What the automatic calibration found, and where it came from.</summary>
@@ -359,6 +424,16 @@ internal sealed class LensCalibrationRecord
     public string CameraSerial { get; set; } = string.Empty;
     public int Stars { get; set; }
     public double RmsPx { get; set; }
+
+    /// <summary>
+    /// The frame turn this was solved in. Turning the camera afterwards does not invalidate it —
+    /// the numbers are carried across — but they have to be carried from somewhere.
+    /// </summary>
+    public int OrientationQuarters { get; set; }
+    public bool OrientationMirror { get; set; }
+
+    [JsonIgnore]
+    public PierCam.Imaging.FrameOrientation Orientation => new(OrientationMirror, OrientationQuarters);
 }
 
 internal enum LibraryView
@@ -428,6 +503,7 @@ internal sealed class AppSettings
     public TargetMarkerSettings TargetMarker { get; set; } = new();
     public UpdateSettings Updates { get; set; } = new();
     public DiscordSettings Discord { get; set; } = new();
+    public CensorSettings Censor { get; set; } = new();
 
     public static string DefaultLibraryRoot() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PierCam");
