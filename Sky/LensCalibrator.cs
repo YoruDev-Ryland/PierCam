@@ -109,17 +109,24 @@ internal sealed class LensCalibrator
     private CalibrationResult Attempt(IReadOnlyList<CalibrationFrame> frames, List<List<Seen>> bright, List<List<Seen>> faint,
         int[] search, List<(double x, double y)> centres, double tolR, double angStep, double fStep, double fMin, double fMax, double rMax)
     {
+        // The search's score only ranks; checking a candidate properly is what decides. The right
+        // answer does not always rank near the top: on a 676MC whose lens sat 2% off the frame's
+        // centre it came in around fortieth, so with forty checked the cheap search succeeded or
+        // failed on a third of a pixel of centre guess, and a failure meant the wide search -
+        // ten minutes instead of thirty seconds. A check costs a few milliseconds, so plenty
+        // are checked.
+        const int Checked = 150;
         var pool = new List<Candidate>();
         foreach (var (cx, cy) in centres)
         {
             _ct.ThrowIfCancellationRequested();
-            pool.AddRange(Search(frames, bright, search, cx, cy, fMin, fMax, rMax, tolR, angStep, fStep).Take(30));
+            pool.AddRange(Search(frames, bright, search, cx, cy, fMin, fMax, rMax, tolR, angStep, fStep).Take(Checked));
         }
         if (pool.Count == 0) return Fail("No arrangement of the catalogue matched the stars at all.", frames);
 
         _progress?.Report("Checking the best candidates");
         var verified = new ConcurrentBag<(int n, double rms, LensModel lens)>();
-        Parallel.ForEach(pool.OrderByDescending(c => c.Score).Take(40), _parallel, c =>
+        Parallel.ForEach(pool.OrderByDescending(c => c.Score).Take(Checked), _parallel, c =>
         {
             var start = new LensModel
             {

@@ -230,11 +230,18 @@ internal sealed class TargetMarkerService : IDisposable
     private const int MaxNightsPerSearch = 2;
 
     /// <summary>
+    /// Raise when the calibration gets better at solving, so nights a weaker version gave up on
+    /// are tried once more. 2: equipment glints, more candidates checked, darkest-frame picking.
+    /// </summary>
+    private const int SearchVersion = 2;
+
+    /// <summary>
     /// What a search was given to work with. Two searches with the same signature would do the
-    /// same work and reach the same answer.
+    /// same work and reach the same answer - unless the search itself has changed, which is what
+    /// <see cref="SearchVersion"/> is for.
     /// </summary>
     private string SearchSignature(string? serial, List<Night> nights) =>
-        $"{serial}|{_settings.Camera.Orientation}|{nights.Count}|" +
+        $"{SearchVersion}|{serial}|{_settings.Camera.Orientation}|{nights.Count}|" +
         string.Join(",", nights.Take(4).Select(n => System.IO.Path.GetFileName(n.M.FolderPath)));
 
     private void CalibrateFromLibrary(CancellationToken ct)
@@ -268,8 +275,8 @@ internal sealed class TargetMarkerService : IDisposable
                 var night = nights[i];
                 var label = NightLabel(night.M);
                 SetStatus(MarkerPhase.Calibrating, $"Calibrating from {label}", "Reading frames");
-                var frames = ReadFrames(night, 9, ct, n => SetStatus(MarkerPhase.Calibrating, $"Calibrating from {label}", $"Reading frames: {n} of 9"));
-                if (frames.Count < 3) { lastReason = $"{label}: not enough dark frames."; continue; }
+                var frames = ReadFrames(night, 9, ct, n => SetStatus(MarkerPhase.Calibrating, $"Calibrating from {label}", $"Choosing the clearest frames: {n} read"));
+                if (frames.Count < 3) { lastReason = $"{label}: not enough clear, dark frames - cloud or moonlight."; App.Note($"Target marker: {lastReason}", "Marker"); continue; }
 
                 // A clear night solves in about a minute. One that is still searching after a few
                 // is cloudy or barely open, and would otherwise run two cores for ten minutes to
@@ -437,30 +444,33 @@ internal sealed class TargetMarkerService : IDisposable
         return first.AddSeconds(n * cadence);
     }
 
-    /// <summary>Picks up to <paramref name="want"/> properly dark frames spread across the night, and finds their stars.</summary>
+    /// <summary>Picks up to <paramref name="want"/> of the night's clearest, darkest frames (see <see cref="FramePicker"/>) and finds their stars.</summary>
     private List<CalibrationFrame> ReadFrames(Night night, int want, CancellationToken ct, Action<int> progress)
     {
         var m = night.M;
+        // Astronomical dark, as for the live sky. Frames from the end of twilight were let in
+        // here once: the glow left them with more detections than a dark frame, most of them
+        // false, and on 28 Sept 2026 eight such frames failed where eight from ten minutes later
+        // solved in forty seconds.
         var dark = Enumerable.Range(0, m.FrameCount)
-            .Where(n => SunCalculator.Altitude(FrameUtc(night, n), _settings.Site.Latitude, _settings.Site.Longitude) < -15)
+            .Where(n => SunCalculator.Altitude(FrameUtc(night, n), _settings.Site.Latitude, _settings.Site.Longitude) < -18)
             .ToList();
         if (dark.Count < 3) return new List<CalibrationFrame>();
-        var picks = Enumerable.Range(0, want).Select(i => dark[(int)Math.Round((dark.Count - 1) * (want == 1 ? 0.5 : i / (double)(want - 1)))])
-            .Distinct().ToList();
 
         var k = StarDetector.ReductionFor(night.VideoW, night.VideoH);
         var ignore = TimestampRect(night.VideoW, night.VideoH, night.CameraW, k);
-        var found = new List<(DateTime utc, List<DetectedStar> stars)>();
         int rw = night.VideoW / k, rh = night.VideoH / k;
-        foreach (var n in picks)
+        var read = 0;
+        var picked = FramePicker.Pick(dark, want, n =>
         {
-            ct.ThrowIfCancellationRequested();
             var luma = ExtractFrame(m.VideoPath, n, m.Fps, night.VideoW, night.VideoH, ct);
-            progress(found.Count + 1);
-            if (luma is null) continue;
+            progress(++read);
+            if (luma is null) return null;
             var small = StarDetector.Reduce(luma, night.VideoW, night.VideoH, k, out rw, out rh);
-            found.Add((FrameUtc(night, n), StarDetector.Find(small, rw, rh, ignore)));
-        }
+            return (StarDetector.Find(small, rw, rh, ignore), FramePicker.SkyLevel(small));
+        }, ct);
+
+        var found = picked.Select(p => (utc: FrameUtc(night, p.n), p.stars)).ToList();
         StarDetector.DropStatic(found);
         return found.Select(f => new CalibrationFrame(f.utc, rw, rh, f.stars)).ToList();
     }

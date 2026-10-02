@@ -76,12 +76,13 @@ internal static class StarDetector
         res.Sort();
         var sigma = Math.Max(1.0, 1.4826 * res[res.Count / 2]);
 
+        var darkBelow = DarkThreshold(bg, w * h);
         var hot = new bool[w * h];
         for (var y = 0; y < h; y++)
         for (var x = 0; x < w; x++)
         {
             var i = y * w + x;
-            if (near[i] < 35) continue;
+            if (near[i] < darkBelow) continue;
             if (ignore is not null && ignore.Any(r => r.Contains(x, y))) continue;
             hot[i] = g[i] - bg[i] > 3.5 * sigma;
         }
@@ -116,6 +117,27 @@ internal static class StarDetector
     }
 
     /// <summary>
+    /// Below what background a pixel counts as "near something dark" - equipment, the wall, the
+    /// lens surround - and its detections are taken for glints rather than stars.
+    ///
+    /// A fixed level is not enough. Once the frame is stretched the dark parts are lifted too, and
+    /// how far depends on the camera and the night: on a 676MC under a moonless sky the mounts and
+    /// the surround sat at 35-50 while the sky sat at 77-98, so a fixed 35 let every LED and cable
+    /// highlight through - half the brightest "stars" were on the hardware, and the calibration
+    /// had nothing real to match. Halfway between the frame's dark floor and its sky separates
+    /// them whatever the stretch. With little contrast to go on, the old fixed level stands.
+    /// </summary>
+    internal static float DarkThreshold(float[] bg, int n)
+    {
+        var sample = new List<float>(n / 16 + 1);
+        for (var i = 0; i < n; i += 16) sample.Add(bg[i]);
+        if (sample.Count < 100) return 35;
+        sample.Sort();
+        float floor = sample[sample.Count / 10], sky = sample[sample.Count * 9 / 10];
+        return sky - floor < 20 ? 35 : Math.Max(35, floor + 0.5f * (sky - floor));
+    }
+
+    /// <summary>
     /// Drops detections that stay put across frames well apart in time. Stars move; LEDs,
     /// highlights on equipment and burned-in text do not.
     /// </summary>
@@ -138,7 +160,7 @@ internal static class StarDetector
         }
     }
 
-    static float[] BoxMean(byte[] g, int w, int h, int r)
+    internal static float[] BoxMean(byte[] g, int w, int h, int r)
     {
         var ii = new double[(w + 1) * (h + 1)];
         for (var y = 0; y < h; y++)
@@ -161,7 +183,7 @@ internal static class StarDetector
         return bg;
     }
 
-    static float[] MinFilter(float[] src, int w, int h, int r)
+    internal static float[] MinFilter(float[] src, int w, int h, int r)
     {
         var tmp = new float[w * h]; var dst = new float[w * h];
         for (var y = 0; y < h; y++)
