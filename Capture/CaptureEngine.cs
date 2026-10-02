@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -182,18 +183,24 @@ internal sealed class CaptureEngine : IDisposable
 
     // ---- lifecycle ------------------------------------------------------------------
 
-    public void Connect(CameraDescriptor descriptor)
+    /// <param name="requiredSerial">
+    /// When set, a camera whose serial differs is closed again and <see cref="CameraMismatchException"/>
+    /// thrown: two cameras of the same model share a name, and only the serial tells them apart.
+    /// </param>
+    public void Connect(CameraDescriptor descriptor, string? requiredSerial = null)
     {
         Disconnect();
 
         SetState(EngineState.Connecting, $"Opening {descriptor.Name}…");
-        var cam = new AsiCamera();
-        cam.Open(descriptor);
+        AsiCamera cam;
+        try { cam = OpenCamera(descriptor, requiredSerial); }
+        catch
+        {
+            SetState(EngineState.Disconnected, "Not connected");
+            throw;
+        }
 
         var c = _settings.Camera;
-        if (c.RoiWidth > 0 && c.RoiHeight > 0 && (c.RoiWidth != cam.Width || c.RoiHeight != cam.Height))
-            cam.SetRoi(c.RoiWidth, c.RoiHeight, Math.Max(1, c.Binning), AsiImgType.Raw16);
-
         _camera = cam;
         // The turn is baked in here, so everything downstream — preview, encoder, star
         // detection, censor mask — works in one agreed set of coordinates.
@@ -207,7 +214,8 @@ internal sealed class CaptureEngine : IDisposable
         _workRgb = new byte[_processor.RgbBytes];
         _latestRgb = new byte[_processor.RgbBytes];
 
-        _settings.LastCameraId = descriptor.Id;
+        _settings.CameraLockName = descriptor.Name;
+        _settings.CameraLockSerial = cam.SerialNumber.Length > 0 ? cam.SerialNumber : null;
 
         _cts = new CancellationTokenSource();
         _thread = new Thread(() => Run(_cts.Token))
@@ -513,7 +521,13 @@ internal sealed class CaptureEngine : IDisposable
                     consecutiveFailures++;
                     _message = $"Frame failed ({consecutiveFailures})";
                     StatusChanged?.Invoke();
-                    if (consecutiveFailures >= 5 && !TryRecoverCamera(ct)) break;
+                    if (consecutiveFailures >= 5)
+                    {
+                        if (!TryRecoverCamera(ct)) break;
+                        // A reopened camera starts from its own defaults, not our gain and offset.
+                        configuredForRecording = null;
+                        consecutiveFailures = 0;
+                    }
                     continue;
                 }
                 consecutiveFailures = 0;
@@ -912,6 +926,7 @@ internal sealed class CaptureEngine : IDisposable
     {
         var descriptor = _camera?.Descriptor;
         if (descriptor is null) return false;
+        var serial = _camera!.SerialNumber;
 
         for (var attempt = 1; attempt <= 60 && !ct.IsCancellationRequested; attempt++)
         {
@@ -919,22 +934,55 @@ internal sealed class CaptureEngine : IDisposable
             SetState(EngineState.Error, _message);
             if (ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(10))) return false;
 
-            try
+            _camera?.Dispose();
+            // Enumerate afresh every time. A camera that dropped off USB comes back under a new
+            // SDK id, and the old id may by then belong to another camera — reopening it blindly
+            // is how a pier cam takes over the guider in the middle of someone's guiding.
+            IReadOnlyList<CameraDescriptor> found;
+            try { found = AsiCamera.Enumerate(); }
+            catch (Exception ex) when (ex is CameraException or InvalidOperationException) { continue; }
+
+            foreach (var d in found)
             {
-                _camera?.Dispose();
-                var cam = new AsiCamera();
-                cam.Open(descriptor);
-                _camera = cam;
-                SetState(_recording is not null ? EngineState.Recording : EngineState.Previewing, "Camera reconnected");
-                return true;
-            }
-            catch (Exception ex) when (ex is CameraException or InvalidOperationException)
-            {
-                // Camera still absent; keep trying. An unattended pier camera should survive a
-                // USB dropout without losing the rest of the night.
+                if (d.Name != descriptor.Name) continue;
+                try
+                {
+                    _camera = OpenCamera(d, serial);
+                    SetState(_recording is not null ? EngineState.Recording : EngineState.Previewing, "Camera reconnected");
+                    return true;
+                }
+                catch (Exception ex) when (ex is CameraException or InvalidOperationException or CameraMismatchException)
+                {
+                    // Not there yet, held by another program, or the other camera of the same
+                    // model. Keep trying: an unattended pier camera should survive a USB dropout
+                    // without losing the rest of the night.
+                }
             }
         }
         return false;
+    }
+
+    /// <summary>Opens one camera, checks it is the one wanted, and applies the ROI.</summary>
+    private AsiCamera OpenCamera(CameraDescriptor d, string? requiredSerial)
+    {
+        var cam = new AsiCamera();
+        try
+        {
+            cam.Open(d);
+            if (!string.IsNullOrEmpty(requiredSerial) && cam.SerialNumber.Length > 0 &&
+                !string.Equals(cam.SerialNumber, requiredSerial, StringComparison.OrdinalIgnoreCase))
+                throw new CameraMismatchException(d.Name, cam.SerialNumber);
+
+            var c = _settings.Camera;
+            if (c.RoiWidth > 0 && c.RoiHeight > 0 && (c.RoiWidth != cam.Width || c.RoiHeight != cam.Height))
+                cam.SetRoi(c.RoiWidth, c.RoiHeight, Math.Max(1, c.Binning), AsiImgType.Raw16);
+            return cam;
+        }
+        catch
+        {
+            cam.Dispose();
+            throw;
+        }
     }
 
     private void SetState(EngineState state, string message)

@@ -472,7 +472,18 @@ internal sealed class AppSettings
 {
     public string LibraryRoot { get; set; } = DefaultLibraryRoot();
     public string? FfmpegPath { get; set; }
+    /// <summary>Obsolete: the SDK's camera id is a plug-order slot, not an identity. Kept so old files load.</summary>
     public int? LastCameraId { get; set; }
+
+    /// <summary>
+    /// The pier camera, by model and serial number. Once set, PierCam opens no other camera on
+    /// its own — not at launch, and not when it reconnects after a USB dropout. The SDK's id
+    /// cannot do this job: it is handed out in plug-in order, so after a re-plug or a reboot the
+    /// id that was the pier camera can be the guider's. Changing it takes the user picking
+    /// another camera and confirming the switch.
+    /// </summary>
+    public string? CameraLockName { get; set; }
+    public string? CameraLockSerial { get; set; }
 
     /// <summary>Palette id — see ThemeManager.Themes. Unknown values fall back to "dark".</summary>
     public string ThemeId { get; set; } = "dark";

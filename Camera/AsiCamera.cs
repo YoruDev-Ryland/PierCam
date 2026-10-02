@@ -14,6 +14,14 @@ internal sealed class CameraException : Exception
         : base($"{op} failed: {code}") => Code = code;
 }
 
+/// <summary>The camera opened is the right model but not the one PierCam is locked to.</summary>
+internal sealed class CameraMismatchException : Exception
+{
+    public string Serial { get; }
+    public CameraMismatchException(string name, string serial)
+        : base($"{name} serial {serial} is not the locked camera") => Serial = serial;
+}
+
 /// <summary>
 /// Managed wrapper around one open ASI camera.
 ///

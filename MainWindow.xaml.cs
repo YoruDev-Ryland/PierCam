@@ -967,10 +967,23 @@ public partial class MainWindow : Window
 
     private void OnRescan(object sender, RoutedEventArgs e) => RescanCameras(autoConnect: false);
 
+    /// <summary>
+    /// True while the locked camera is missing and PierCam should open it the moment it appears.
+    /// Off once the user disconnects by hand: they have said they want no camera.
+    /// </summary>
+    private bool _waitingForLockedCamera;
+    private DateTime _lastLockedScanUtc;
+
     private void RescanCameras(bool autoConnect)
     {
         try { _cameras = AsiCamera.Enumerate().ToList(); }
         catch (Exception ex) { App.Log(ex, "Enumerate"); _cameras = new List<CameraDescriptor>(); }
+
+        AdoptCameraLockFromLibrary();
+        var lockName = _settings.CameraLockName;
+        CameraCombo.ToolTip = lockName is null
+            ? "No camera chosen yet - the first one connected becomes PierCam's camera"
+            : $"Locked to {CameraLockText()}. PierCam opens no other camera on its own.";
 
         CameraCombo.ItemsSource = _cameras
             .Select(c => new Option<int>($"{c.Name}  {c.MaxWidth}×{c.MaxHeight}", c.Id)).ToList();
@@ -982,8 +995,11 @@ public partial class MainWindow : Window
             ConnectButton.IsEnabled = false;
             PreviewPlaceholder.Text = AsiSdk.ResolvedPath is null
                 ? "ASICamera2.dll NOT FOUND"
-                : "NO CAMERA — CLOSE SHARPCAP OR ASISTUDIO FIRST";
+                : lockName is not null
+                    ? $"WAITING FOR {lockName.ToUpperInvariant()}"
+                    : "NO CAMERA — CLOSE SHARPCAP OR ASISTUDIO FIRST";
             PreviewPlaceholder.Visibility = Visibility.Visible;
+            if (autoConnect) _waitingForLockedCamera = lockName is not null;
             UpdateDiagnostics();
             return;
         }
@@ -991,33 +1007,142 @@ public partial class MainWindow : Window
         ConnectButton.IsEnabled = true;
 
         // Several ZWO cameras are often plugged into the same machine — a mono main camera,
-        // a guider, and the all-sky colour camera this app is for. Grabbing the wrong one
-        // would interrupt an imaging run, so only auto-connect when the choice is obvious.
-        var remembered = _cameras.FindIndex(c => c.Id == _settings.LastCameraId);
-        var colourOnly = _cameras.Count(c => c.IsColor) == 1 ? _cameras.FindIndex(c => c.IsColor) : -1;
-        var preferred = remembered >= 0 ? remembered : colourOnly;
+        // a guider, and the all-sky camera this app is for. Opening the wrong one interrupts an
+        // imaging run or someone's guiding, so PierCam only ever opens a camera on its own when
+        // it is the locked one. With none locked yet it waits to be told, unless there is no
+        // choice to make: colour is no clue, since guide cameras are often colour too.
+        var preferred = lockName is not null
+            ? _cameras.FindIndex(c => c.Name == lockName)
+            : _cameras.Count == 1 ? 0 : -1;
         CameraCombo.SelectedIndex = preferred >= 0 ? preferred : 0;
 
-        if (autoConnect && !IsConnected && preferred >= 0) Connect();
+        if (autoConnect && !IsConnected)
+        {
+            if (preferred >= 0) Connect(quiet: lockName is not null);
+            _waitingForLockedCamera = lockName is not null && !IsConnected;
+            if (_waitingForLockedCamera)
+            {
+                PreviewPlaceholder.Text = $"WAITING FOR {lockName!.ToUpperInvariant()}";
+                PreviewPlaceholder.Visibility = Visibility.Visible;
+            }
+        }
         UpdateDiagnostics();
     }
+
+    /// <summary>
+    /// Settings from before the lock existed only held the SDK's slot number, which is not an
+    /// identity. The library knows better: every night records the camera that took it. The
+    /// camera behind most of the last five nights is taken, rather than simply the newest, so
+    /// one night recorded on the wrong camera does not lock PierCam to that camera.
+    /// </summary>
+    private void AdoptCameraLockFromLibrary()
+    {
+        if (_settings.CameraLockName is not null) return;
+        try
+        {
+            if (!Directory.Exists(_settings.TimelapseRoot)) return;
+            var best = Directory.EnumerateDirectories(_settings.TimelapseRoot)
+                .OrderByDescending(Path.GetFileName, StringComparer.Ordinal)
+                .Select(TimelapseManifest.TryLoad)
+                .Where(m => m is { CameraName.Length: > 0 })
+                .Take(5)
+                .GroupBy(m => (m!.CameraName, m.CameraSerial))
+                .OrderByDescending(g => g.Count())
+                .FirstOrDefault();
+            if (best is null) return;
+
+            _settings.CameraLockName = best.Key.CameraName;
+            _settings.CameraLockSerial = string.IsNullOrEmpty(best.Key.CameraSerial) ? null : best.Key.CameraSerial;
+            _settings.Save();
+            App.Note($"Locked to {CameraLockText()}, the camera behind the latest nights", "Camera");
+        }
+        catch (Exception ex) { App.Log(ex, "Camera lock"); }
+    }
+
+    private string CameraLockText() => _settings.CameraLockName is not { } name
+        ? "none"
+        : _settings.CameraLockSerial is { } sn ? $"{name} (serial {sn})" : name;
 
     private bool IsConnected => _engine.ConnectedCamera is not null;
 
     private void OnConnectToggle(object sender, RoutedEventArgs e)
     {
-        if (IsConnected) Disconnect(); else Connect();
+        if (IsConnected)
+        {
+            _waitingForLockedCamera = false;
+            Disconnect();
+        }
+        else Connect();
     }
 
-    private void Connect()
+    /// <param name="quiet">An automatic attempt: never asks, never shows an error.</param>
+    private void Connect(bool quiet = false)
     {
         var id = Selected(CameraCombo, -1);
-        var descriptor = _cameras.FirstOrDefault(c => c.Id == id);
-        if (descriptor is null) return;
+        var picked = _cameras.FirstOrDefault(c => c.Id == id);
+        if (picked is null) return;
+
+        var lockName = _settings.CameraLockName;
+        string? serial = null;
+        List<CameraDescriptor> tries;
+        if (lockName is null || picked.Name == lockName)
+        {
+            // Two cameras of the same model share a name; only the serial tells them apart, and
+            // it can only be read once a camera is open. So each of that model is tried in turn.
+            serial = lockName is null ? null : _settings.CameraLockSerial;
+            tries = _cameras.Where(c => c.Name == picked.Name)
+                .OrderBy(c => c.Id == picked.Id ? 0 : 1).ToList();
+        }
+        else
+        {
+            if (quiet) return;
+            var answer = MessageBox.Show(this,
+                $"PierCam is locked to {CameraLockText()}.\n\n" +
+                $"Switch to {picked.Name}? From then on PierCam will use only {picked.Name}, and " +
+                $"will not open {lockName} again unless you switch back.",
+                "Change PierCam's camera?", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes) return;
+            tries = new List<CameraDescriptor> { picked };
+        }
+
+        CameraDescriptor? descriptor = null;
+        Exception? failure = null;
+        foreach (var d in tries)
+        {
+            try
+            {
+                _engine.Connect(d, serial);
+                descriptor = d;
+                break;
+            }
+            catch (Exception ex) { failure = ex; }
+        }
+
+        // Only another camera of the locked model was there. Picking it by hand can be a
+        // deliberate swap for an identical camera, so offer it rather than refusing outright.
+        if (descriptor is null && failure is CameraMismatchException mismatch && !quiet &&
+            MessageBox.Show(this,
+                $"This {picked.Name} is serial {mismatch.Serial}, not PierCam's camera ({CameraLockText()}).\n\n" +
+                "Switch PierCam to this one? From then on it will use only this camera.",
+                "Change PierCam's camera?", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                MessageBoxResult.No) == MessageBoxResult.Yes)
+        {
+            try
+            {
+                _engine.Connect(picked);
+                descriptor = picked;
+            }
+            catch (Exception ex) { failure = ex; }
+        }
+        else if (descriptor is null && failure is CameraMismatchException) return;
 
         try
         {
-            _engine.Connect(descriptor);
+            if (descriptor is null) throw failure ?? new InvalidOperationException("No camera opened.");
+            _waitingForLockedCamera = false;
+            // The lock is written by the engine on every connect; keep it even through a crash.
+            _settings.Save();
             _bitmap = null;
             _renderedSequence = -1;
             PreviewPlaceholder.Text = "WAITING FOR FIRST FRAME";
@@ -1038,12 +1163,14 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            App.Log(ex, "Connect");
+            if (!quiet) App.Log(ex, "Connect");
+            var text = ex.Message;
             var hint = ex is CameraException { Code: AsiError.CameraRemoved or AsiError.InvalidId }
                 ? "\n\nIf SharpCap or ASIStudio is running, close it — only one program can hold the camera."
                 : string.Empty;
-            MessageBox.Show(this, ex.Message + hint, "Could not open camera",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (!quiet)
+                MessageBox.Show(this, text + hint, "Could not open camera",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         UpdateStatusBar();
         UpdateDiagnostics();
@@ -1304,6 +1431,15 @@ public partial class MainWindow : Window
     private void OnScheduleTick(object? sender, EventArgs e)
     {
         UpdateScheduleHint();
+
+        // The locked camera was missing at launch or never came back: look for it twice a
+        // minute, and open nothing else. A dropdown being browsed is left alone.
+        if (!IsConnected && _waitingForLockedCamera && !CameraCombo.IsDropDownOpen &&
+            DateTime.UtcNow - _lastLockedScanUtc > TimeSpan.FromSeconds(30))
+        {
+            _lastLockedScanUtc = DateTime.UtcNow;
+            RescanCameras(autoConnect: true);
+        }
         if (!IsConnected) return;
 
         var now = DateTime.Now;
@@ -3119,6 +3255,7 @@ public partial class MainWindow : Window
             $"THEME              {ThemeManager.Current.Name}",
             $"ASI SDK            {(AsiSdk.ResolvedPath is null ? "not loaded" : AsiSdk.GetSdkVersion())}",
             $"CAMERAS DETECTED   {_cameras.Count}",
+            $"LOCKED TO          {CameraLockText()}",
         };
 
         if (_engine.ConnectedCamera is { } cam)
