@@ -16,11 +16,20 @@ internal sealed class StretchParams
     public double BlueGain { get; set; } = 1.0;
     public double Saturation { get; set; } = 1.0;
 
+    /// <summary>
+    /// Added to red and blue after their gain, in normalised units. A gain alone can make one
+    /// level neutral - the sky - but tints everything darker the opposite way; a gain and a lift
+    /// together make two levels neutral, the sky and the dark floor.
+    /// </summary>
+    public double RedLift { get; set; }
+    public double BlueLift { get; set; }
+
     public StretchParams Clone() => (StretchParams)MemberwiseClone();
 
     public bool Matches(StretchParams o) =>
         Black == o.Black && White == o.White && Midtone == o.Midtone &&
-        RedGain == o.RedGain && GreenGain == o.GreenGain && BlueGain == o.BlueGain;
+        RedGain == o.RedGain && GreenGain == o.GreenGain && BlueGain == o.BlueGain &&
+        RedLift == o.RedLift && BlueLift == o.BlueLift;
 }
 
 /// <summary>
@@ -75,9 +84,9 @@ internal sealed class StretchLut
         var span = white - black;
         var mid = Math.Clamp(p.Midtone, 0.001, 0.999);
 
-        Fill(R, black, span, mid, p.RedGain);
-        Fill(G, black, span, mid, p.GreenGain);
-        Fill(B, black, span, mid, p.BlueGain);
+        Fill(R, black, span, mid, p.RedGain, p.RedLift);
+        Fill(G, black, span, mid, p.GreenGain, 0);
+        Fill(B, black, span, mid, p.BlueGain, p.BlueLift);
 
         _current.Black = p.Black;
         _current.White = p.White;
@@ -85,16 +94,17 @@ internal sealed class StretchLut
         _current.RedGain = p.RedGain;
         _current.GreenGain = p.GreenGain;
         _current.BlueGain = p.BlueGain;
+        _current.RedLift = p.RedLift;
+        _current.BlueLift = p.BlueLift;
     }
 
-    private static void Fill(byte[] table, double black, double span, double mid, double gain)
+    private static void Fill(byte[] table, double black, double span, double mid, double gain, double lift)
     {
         const double inv = 1.0 / (Size - 1);
         for (var i = 0; i < Size; i++)
         {
-            var x = (i * inv - black) / span;
+            var x = ((i * inv - black) * gain + lift) / span;
             if (x <= 0.0) { table[i] = 0; continue; }
-            if (gain != 1.0) x *= gain;
             if (x >= 1.0) { table[i] = 255; continue; }
             var y = Mtf(mid, x);
             table[i] = (byte)Math.Clamp((int)(y * 255.0 + 0.5), 0, 255);

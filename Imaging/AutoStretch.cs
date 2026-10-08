@@ -111,14 +111,136 @@ internal sealed class AutoStretchAnalyzer
 
         if (_isColor && NeutraliseBackground)
         {
-            // Scale R and B so their backgrounds sit on top of green's.
-            var gLevel = medG / (Bins - 1.0) - black;
-            var rLevel = medR / (Bins - 1.0) - black;
-            var bLevel = medB / (Bins - 1.0) - black;
-            p.RedGain = SafeGain(gLevel, rLevel);
-            p.BlueGain = SafeGain(gLevel, bLevel);
+            // Make the sky neutral, and the dark floor with it. Measured on the frame's own sky
+            // and dark parts (see Levels); the frame-wide medians above stay as they were for the
+            // brightness, which is what auto-exposure and the stretch have always been tuned on.
+            var c = _imgType == AsiImgType.Raw16
+                ? Levels(MemoryMarshal.Cast<byte, ushort>(raw[..(_width * _height * 2)]), sigma)
+                : Levels8(raw, sigma);
+            static double N(double v) => v / (Bins - 1.0);
+            if (c.HasFloor)
+            {
+                // Two levels, two unknowns per channel: the gain carries red's and blue's
+                // sky-above-floor onto green's, and the lift puts their floor where green's is.
+                var gSpan = N(c.SkyG) - N(c.FloorG);
+                p.RedGain = SafeGain(gSpan, N(c.SkyR) - N(c.FloorR));
+                p.BlueGain = SafeGain(gSpan, N(c.SkyB) - N(c.FloorB));
+                p.RedLift = (N(c.FloorG) - black) - (N(c.FloorR) - black) * p.RedGain;
+                p.BlueLift = (N(c.FloorG) - black) - (N(c.FloorB) - black) * p.BlueGain;
+            }
+            else
+            {
+                // Nothing dark to anchor to: scale R and B so the background sits on green's.
+                p.RedGain = SafeGain(N(c.SkyG) - black, N(c.SkyR) - black);
+                p.BlueGain = SafeGain(N(c.SkyG) - black, N(c.SkyB) - black);
+            }
         }
         return p;
+    }
+
+    // ── the sky's own colour, and the dark floor's ────────────────────────────────────────
+    //
+    // Neutralising used the whole frame's medians, which is the sky only while the sky fills the
+    // frame. An all-sky lens on a square sensor leaves most of the frame to the dark surround,
+    // the wall and the equipment, and those set the median: on an ASI676MC the correction
+    // balanced the surround - already neutral - and left a moonless sky visibly green (stretched,
+    // sky ~93/110/84 against a surround of ~33/32/37). Under the moon or in twilight the sky is
+    // bright and near neutral anyway, which is why only the dark hours showed it.
+    //
+    // Measuring the sky alone fixed the sky, but a gain per channel can only make one level
+    // neutral: the boost that greyed the sky pushed the dark walls and surround to magenta
+    // (~44/34/53). So both are measured, and two levels pinned: blocks brighter than halfway
+    // between the frame's 10th and 90th percentile block brightness are sky, the rest are the
+    // floor. A frame with no such contrast - fog, a closed roof, a sky that fills the sensor - is
+    // measured whole, as before. Sampled more sparsely than the main pass: a median needs far
+    // fewer samples than the noise estimate does.
+
+    private readonly record struct ColourLevels(double SkyR, double SkyG, double SkyB,
+        double FloorR, double FloorG, double FloorB, bool HasFloor);
+
+    private const int SkyStep = 4;
+    private readonly int[] _lumHist = new int[Bins];
+    private readonly int[] _skyR = new int[Bins];
+    private readonly int[] _skyG = new int[Bins];
+    private readonly int[] _skyB = new int[Bins];
+    private readonly int[] _floorR = new int[Bins];
+    private readonly int[] _floorG = new int[Bins];
+    private readonly int[] _floorB = new int[Bins];
+
+    private ColourLevels Levels(ReadOnlySpan<ushort> src, double sigma)
+    {
+        Array.Clear(_lumHist);
+        for (var by = 0; by + 1 < _height; by += 2 * SkyStep)
+        for (var bx = 0; bx + 1 < _width; bx += 2 * SkyStep)
+        {
+            int i = by * _width + bx, j = i + _width;
+            _lumHist[(src[i] + src[i + 1] + src[j] + src[j + 1]) >> 2]++;
+        }
+        var cut = SkyCut(sigma);
+
+        ClearLevels();
+        var pat = _pattern;
+        for (var by = 0; by + 1 < _height; by += 2 * SkyStep)
+        for (var bx = 0; bx + 1 < _width; bx += 2 * SkyStep)
+        {
+            int i = by * _width + bx, j = i + _width;
+            var sky = (src[i] + src[i + 1] + src[j] + src[j + 1]) >> 2 >= cut;
+            BumpLevel(pat[0], src[i], sky); BumpLevel(pat[1], src[i + 1], sky);
+            BumpLevel(pat[2], src[j], sky); BumpLevel(pat[3], src[j + 1], sky);
+        }
+        return Medians(cut > 0);
+    }
+
+    private ColourLevels Levels8(ReadOnlySpan<byte> src, double sigma)
+    {
+        Array.Clear(_lumHist);
+        for (var by = 0; by + 1 < _height; by += 2 * SkyStep)
+        for (var bx = 0; bx + 1 < _width; bx += 2 * SkyStep)
+        {
+            int i = by * _width + bx, j = i + _width;
+            _lumHist[(src[i] + src[i + 1] + src[j] + src[j + 1]) << 6]++;
+        }
+        var cut = SkyCut(sigma);
+
+        ClearLevels();
+        var pat = _pattern;
+        for (var by = 0; by + 1 < _height; by += 2 * SkyStep)
+        for (var bx = 0; bx + 1 < _width; bx += 2 * SkyStep)
+        {
+            int i = by * _width + bx, j = i + _width;
+            var sky = (src[i] + src[i + 1] + src[j] + src[j + 1]) << 6 >= cut;
+            BumpLevel(pat[0], (ushort)(src[i] << 8), sky); BumpLevel(pat[1], (ushort)(src[i + 1] << 8), sky);
+            BumpLevel(pat[2], (ushort)(src[j] << 8), sky); BumpLevel(pat[3], (ushort)(src[j + 1] << 8), sky);
+        }
+        return Medians(cut > 0);
+    }
+
+    private ColourLevels Medians(bool split) => new(
+        Percentile(_skyR, 0.5), Percentile(_skyG, 0.5), Percentile(_skyB, 0.5),
+        Percentile(_floorR, 0.5), Percentile(_floorG, 0.5), Percentile(_floorB, 0.5), split);
+
+    /// <summary>The block brightness above which a block counts as sky; 0 measures the whole frame.</summary>
+    private int SkyCut(double sigma)
+    {
+        var lo = Percentile(_lumHist, 0.10);
+        var hi = Percentile(_lumHist, 0.90);
+        return hi - lo < 4 * sigma ? 0 : (int)(lo + 0.5 * (hi - lo));
+    }
+
+    private void ClearLevels()
+    {
+        Array.Clear(_skyR); Array.Clear(_skyG); Array.Clear(_skyB);
+        Array.Clear(_floorR); Array.Clear(_floorG); Array.Clear(_floorB);
+    }
+
+    private void BumpLevel(byte colour, ushort v, bool sky)
+    {
+        switch (colour)
+        {
+            case 0: (sky ? _skyR : _floorR)[v]++; break;
+            case 2: (sky ? _skyB : _floorB)[v]++; break;
+            default: (sky ? _skyG : _floorG)[v]++; break;
+        }
     }
 
     private static double SafeGain(double reference, double channel)
@@ -293,6 +415,8 @@ internal sealed class SmoothedStretch
         _state.RedGain = Lerp(_state.RedGain, measured.RedGain, a);
         _state.GreenGain = Lerp(_state.GreenGain, measured.GreenGain, a);
         _state.BlueGain = Lerp(_state.BlueGain, measured.BlueGain, a);
+        _state.RedLift = Lerp(_state.RedLift, measured.RedLift, a);
+        _state.BlueLift = Lerp(_state.BlueLift, measured.BlueLift, a);
 
         // Midtone spans orders of magnitude on dark frames, so average it geometrically;
         // a linear average would be dominated by the brightest frames of the night.
