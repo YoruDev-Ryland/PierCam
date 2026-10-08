@@ -534,8 +534,16 @@ internal sealed class AppSettings
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
     };
 
-    public static string SettingsPath => Path.Combine(
+    public static string SettingsPath => _settingsPathForTests ?? Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PierCam", "settings.json");
+
+    /// <summary>
+    /// Points every load and save at another file. For tests only: anything that saves - an
+    /// update check does - would otherwise write a blank test configuration over the user's
+    /// real one, under a PierCam that is running. A self-test did exactly that on 6 Oct 2026.
+    /// </summary>
+    internal static void UseSettingsPathForTests(string path) => _settingsPathForTests = path;
+    private static string? _settingsPathForTests;
 
     public static AppSettings Load()
     {
