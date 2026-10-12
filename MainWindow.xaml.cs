@@ -37,6 +37,7 @@ public partial class MainWindow : Window
     private readonly AppSettings _settings;
     private readonly CaptureEngine _engine;
     private readonly Sky.TargetMarkerService _marker;
+    private readonly Sky.SkyOverlayService _overlay;
     private readonly LibraryStore _library = new();
     private readonly NightlyScheduler _scheduler;
     private readonly Update.UpdateService _updates;
@@ -76,6 +77,9 @@ public partial class MainWindow : Window
             a => Dispatcher.BeginInvoke(a, DispatcherPriority.Background));
         _marker.StatusChanged += () => Dispatcher.BeginInvoke((Action)UpdateMarkerUi, DispatcherPriority.Background);
         _engine.Marker = _marker;
+        _overlay = new Sky.SkyOverlayService(_settings, _marker.CalibratedLensFor,
+            () => _roof.Status.State switch { RoofState.Open => true, RoofState.Closed => false, _ => null });
+        _engine.Overlay = _overlay;
         _scheduler = new NightlyScheduler(_settings, () => _roof.Status);
         _updates = new Update.UpdateService(_settings, () => _engine.IsRecording,
             () => _scheduler.NextStart(DateTime.Now),
@@ -1238,7 +1242,11 @@ public partial class MainWindow : Window
 
     // ══════════════════════ status ══════════════════════
 
-    private void OnStatusTick(object? sender, EventArgs e) => UpdateStatusBar();
+    private void OnStatusTick(object? sender, EventArgs e)
+    {
+        UpdateStatusBar();
+        UpdateSkyOverlayStatus();
+    }
 
     private void UpdateStatusBar()
     {
@@ -2044,9 +2052,11 @@ public partial class MainWindow : Window
     private void UpdateAutoExposureHint()
     {
         var c = _settings.Camera;
+        RecordingManualPanel.IsEnabled = !c.AutoExposure;
+        RecordingManualPanel.Opacity = c.AutoExposure ? 0.45 : 1.0;
         AutoExposureHint.Text = c.AutoExposure
-            ? $"RAMPS {FormatExposure(c.AutoExposureMinSeconds)}–{FormatExposure(c.AutoExposureMaxSeconds)}, GAIN {c.AutoExposureMinGain}–{c.AutoExposureMaxGain}, MAX {c.AutoExposureMaxStep:P0}/FRAME."
-            : "OFF — FIXED EXPOSURE. FINE UNTIL DAWN, THEN FRAMES SATURATE.";
+            ? $"SUB LENGTH AND GAIN ARE SET FOR YOU: {FormatExposure(c.AutoExposureMinSeconds)}–{FormatExposure(c.AutoExposureMaxSeconds)}, GAIN {c.AutoExposureMinGain}–{c.AutoExposureMaxGain}, MAX {c.AutoExposureMaxStep:P0}/FRAME. LIMITS UNDER AUTO-EXPOSURE."
+            : "OFF — THE SUB LENGTH AND GAIN ABOVE, ALL NIGHT. FINE UNTIL DAWN, THEN FRAMES SATURATE.";
     }
 
     // ══════════════════════ startup & housekeeping options ══════════════════════
@@ -3379,10 +3389,12 @@ public partial class MainWindow : Window
 
         // The marker first: once the engine no longer calls into it, it can shut down its threads.
         _engine.Marker = null;
+        _engine.Overlay = null;
         _engine.StopRecording("PierCam closed");
         _engine.Discord = null;
         _engine.Dispose();
         _marker.Dispose();
+        _overlay.Dispose();
         _updates.Dispose();
         _discord.Dispose();
         _settings.Save();
@@ -3434,6 +3446,8 @@ public partial class MainWindow : Window
         // The calibration is still true, only described in the old frame; the marker carries it
         // across the moment it is applied.
         _marker.Apply();
+        // The sky area is kept against the sensor; the overlay needs it in the new frame.
+        _overlay.Invalidate();
         UpdateMarkerUi();
         UpdateCensorUi();
         RedrawCensorOverlay();
@@ -3461,21 +3475,34 @@ public partial class MainWindow : Window
     private int _draggingPoint = -1;
     private int _draggingRegion = -1;
 
+    /// <summary>
+    /// The same editor outlines two things: areas to blur out of every frame, and the open sky
+    /// the overlay labels are kept inside. Which one is being edited decides the list it works on.
+    /// </summary>
+    private bool _editingSky;
+
     /// <summary>Radius of a point's grab area, in canvas pixels.</summary>
     private const double PointGrab = 11;
 
-    private List<Models.CensorRegion> Regions => _settings.Censor.Regions;
+    private List<Models.CensorRegion> Regions => _editingSky ? _settings.SkyOverlay.SkyArea : _settings.Censor.Regions;
 
-    private void OnCensorEdit(object sender, RoutedEventArgs e)
+    private void OnCensorEdit(object sender, RoutedEventArgs e) => BeginMaskEditing(sky: false);
+    private void OnSkyAreaEdit(object sender, RoutedEventArgs e) => BeginMaskEditing(sky: true);
+
+    private void BeginMaskEditing(bool sky)
     {
         if (!IsConnected)
         {
-            MessageBox.Show(this, "Connect the camera first — the mask is drawn on the live view.",
+            MessageBox.Show(this, sky
+                    ? "Connect the camera first — the sky area is drawn on the live view."
+                    : "Connect the camera first — the mask is drawn on the live view.",
                 "Nothing to draw on", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        _censorSnapshot = System.Text.Json.JsonSerializer.Serialize(_settings.Censor.Regions);
+        _editingSky = sky;
+        CensorTitle.Text = sky ? "SKY AREA · OUTLINE THE OPEN SKY" : "BLUR MASK";
+        _censorSnapshot = System.Text.Json.JsonSerializer.Serialize(Regions);
         _censorEditing = true;
         if (Regions.Count == 0) Regions.Add(new Models.CensorRegion());
 
@@ -3495,12 +3522,15 @@ public partial class MainWindow : Window
     {
         if (!keep && _censorSnapshot is not null)
         {
-            var restored = System.Text.Json.JsonSerializer.Deserialize<List<Models.CensorRegion>>(_censorSnapshot);
-            _settings.Censor.Regions = restored ?? new List<Models.CensorRegion>();
+            var restored = System.Text.Json.JsonSerializer.Deserialize<List<Models.CensorRegion>>(_censorSnapshot)
+                           ?? new List<Models.CensorRegion>();
+            if (_editingSky) _settings.SkyOverlay.SkyArea = restored;
+            else _settings.Censor.Regions = restored;
         }
 
         // An area with fewer than three points is not a shape; drop it rather than keep a stub.
-        _settings.Censor.Regions.RemoveAll(r => r.Points.Count < 3);
+        Regions.RemoveAll(r => r.Points.Count < 3);
+        if (_editingSky) _overlay.Invalidate();
 
         _censorEditing = false;
         _censorSnapshot = null;
@@ -3717,6 +3747,8 @@ public partial class MainWindow : Window
     {
         CensorCanvas.Children.Clear();
         if (!_censorEditing) return;
+        // The labels follow the outline as it is drawn: the overlay rebuilds in the background.
+        if (_editingSky) _overlay.Invalidate();
 
         var accent = (Brush)FindResource("Accent");
         foreach (var region in Regions)
@@ -3755,6 +3787,17 @@ public partial class MainWindow : Window
 
     private void LoadCensorIntoUi() => CensorEnabledCheck.IsChecked = _settings.Censor.Enabled;
 
+    private void OnSkyAreaClear(object sender, RoutedEventArgs e)
+    {
+        if (!Dialogs.Confirm(this, "Clear the sky area",
+                "Remove the outlined sky area? The overlay will label the whole picture again.", "CLEAR"))
+            return;
+        _settings.SkyOverlay.SkyArea.Clear();
+        _settings.Save();
+        _overlay.Invalidate();
+        UpdateCensorUi();
+    }
+
     private void OnCensorSettingsChanged(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
@@ -3765,12 +3808,18 @@ public partial class MainWindow : Window
 
     private void UpdateCensorUi()
     {
-        var areas = Regions.Count(r => r.Points.Count >= 3);
+        static (int areas, int points) Count(List<Models.CensorRegion> list) =>
+            (list.Count(r => r.Points.Count >= 3), list.Sum(r => r.Points.Count));
+        static string Describe((int areas, int points) c, string none) => c.areas == 0
+            ? (c.points > 0 ? $"{c.points} POINT{(c.points == 1 ? "" : "S")} — THREE MAKE AN AREA" : none)
+            : $"{c.areas} AREA{(c.areas == 1 ? "" : "S")} · {c.points} POINTS";
+
+        CensorSummary.Text = Describe(Count(_settings.Censor.Regions), "NOTHING MASKED YET");
+        SkyAreaSummary.Text = Describe(Count(_settings.SkyOverlay.SkyArea), "NONE — THE WHOLE PICTURE COUNTS AS SKY");
+        SkyAreaClearButton.IsEnabled = !_censorEditing && _settings.SkyOverlay.SkyArea.Count > 0;
         var points = Regions.Sum(r => r.Points.Count);
-        CensorSummary.Text = areas == 0
-            ? (points > 0 ? $"{points} POINT{(points == 1 ? "" : "S")} — THREE MAKE AN AREA" : "NOTHING MASKED YET")
-            : $"{areas} AREA{(areas == 1 ? "" : "S")} · {points} POINTS";
         CensorEditButton.IsEnabled = !_censorEditing;
+        SkyAreaEditButton.IsEnabled = !_censorEditing;
         if (_censorEditing) CensorHint.Text = points < 3
             ? "CLICK TO ADD POINTS · THREE MAKE AN AREA"
             : "CLICK TO ADD · DRAG A POINT TO MOVE IT · RIGHT-CLICK ONE TO REMOVE IT";
@@ -4032,7 +4081,72 @@ public partial class MainWindow : Window
         MarkerBurnCheck.IsChecked = m.BurnIntoRecordings;
         MarkerKeepOriginalCheck.IsChecked = m.KeepUnmarkedOriginal;
         MarkerApiBox.Text = m.NinaApiUrl;
+
+        var o = _settings.SkyOverlay;
+        SkyOverlayCheck.IsChecked = o.Enabled;
+        SkyOverlayBurnCheck.IsChecked = o.BurnIntoRecordings;
+        SkyLinesCheck.IsChecked = o.ConstellationLines;
+        SkyConNamesCheck.IsChecked = o.ConstellationNames;
+        SkyStarsCheck.IsChecked = o.StarNames;
+        SkyPlanetsCheck.IsChecked = o.Planets;
+        SkyGalaxiesCheck.IsChecked = o.Galaxies;
+        SkyClustersCheck.IsChecked = o.Clusters;
+        SkyNebulaeCheck.IsChecked = o.Nebulae;
+        SkyDirectionsCheck.IsChecked = o.Directions;
+        SkyDensitySlider.Value = Math.Clamp(o.Density, 1, 5);
     }
+
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• sky overlay â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+    private void OnSkyOverlayChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        var o = _settings.SkyOverlay;
+        o.Enabled = SkyOverlayCheck.IsChecked == true;
+        o.BurnIntoRecordings = SkyOverlayBurnCheck.IsChecked == true;
+        o.ConstellationLines = SkyLinesCheck.IsChecked == true;
+        o.ConstellationNames = SkyConNamesCheck.IsChecked == true;
+        o.StarNames = SkyStarsCheck.IsChecked == true;
+        o.Planets = SkyPlanetsCheck.IsChecked == true;
+        o.Galaxies = SkyGalaxiesCheck.IsChecked == true;
+        o.Clusters = SkyClustersCheck.IsChecked == true;
+        o.Nebulae = SkyNebulaeCheck.IsChecked == true;
+        o.Directions = SkyDirectionsCheck.IsChecked == true;
+        _settings.Save();
+        _overlay.Invalidate();
+        UpdateMarkerUi();
+    }
+
+    private void OnSkyDensityChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        UpdateSkyDensityLabel();
+        if (_loading) return;
+        _settings.SkyOverlay.Density = (int)Math.Round(e.NewValue);
+        _settings.Save();
+        _overlay.Invalidate();
+    }
+
+    /// <summary>What the overlay is doing right now. Refreshed every second: it can hide itself at any time.</summary>
+    private void UpdateSkyOverlayStatus()
+    {
+        var overlay = _settings.SkyOverlay;
+        var text = !overlay.Enabled ? "OFF."
+            : !_settings.TargetMarker.Enabled ? "WAITING: SWITCH ON THE TARGET MARKER ABOVE - THE OVERLAY USES ITS CALIBRATION."
+            : _marker.Phase != Sky.MarkerPhase.Calibrated ? "WAITING FOR THE MARKER'S CALIBRATION."
+            : _overlay.HiddenReason.Length > 0 ? _overlay.HiddenReason
+            : overlay.BurnIntoRecordings ? "SHOWING IN THE LIVE VIEW AND RECORDINGS." : "SHOWING IN THE LIVE VIEW ONLY.";
+        if (SkyOverlayStatus.Text != text) SkyOverlayStatus.Text = text;
+    }
+
+    private void UpdateSkyDensityLabel() =>
+        SkyDensityValue.Text = (int)Math.Round(SkyDensitySlider.Value) switch
+        {
+            1 => "SPARSE",
+            2 => "LIGHT",
+            3 => "BALANCED",
+            4 => "BUSY",
+            _ => "EVERYTHING",
+        };
 
     private void OnMarkerSettingsChanged(object sender, RoutedEventArgs e)
     {
@@ -4130,8 +4244,15 @@ public partial class MainWindow : Window
         });
         var on = _settings.TargetMarker.Enabled;
         MarkerBurnCheck.IsEnabled = on;
-        // Only means something with burn-in on. Like burn-in, it applies from the next recording.
-        MarkerKeepOriginalCheck.IsEnabled = on && _settings.TargetMarker.BurnIntoRecordings;
+        // Only means something with something burned in. Like burn-in, it applies from the next recording.
+        var overlay = _settings.SkyOverlay;
+        MarkerKeepOriginalCheck.IsEnabled = on && (_settings.TargetMarker.BurnIntoRecordings || overlay is { Enabled: true, BurnIntoRecordings: true });
+
+        SkyOverlayBurnCheck.IsEnabled = overlay.Enabled;
+        SkyOverlayTypes.IsEnabled = SkyOverlayDensityPanel.IsEnabled = overlay.Enabled;
+        SkyOverlayTypes.Opacity = SkyOverlayDensityPanel.Opacity = overlay.Enabled ? 1.0 : 0.45;
+        UpdateSkyDensityLabel();
+        UpdateSkyOverlayStatus();
         MarkerRecalibrateButton.IsEnabled = on && _settings.Site.IsSet
                                              && phase is not (Sky.MarkerPhase.Searching or Sky.MarkerPhase.Calibrating);
         MarkerMovedButton.IsEnabled = on;

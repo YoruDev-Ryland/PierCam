@@ -37,6 +37,8 @@
   <ItemGroup>
     <!-- Bright stars for the target marker's automatic calibration (44 KB, loaded only while calibrating). -->
     <EmbeddedResource Include="Sky\bright-stars.csv" LogicalName="PierCam.Sky.bright-stars.csv" />
+    <!-- Constellations, named stars and Messier objects for the sky overlay (26 KB, from d3-celestial). -->
+    <EmbeddedResource Include="Sky\sky-objects.csv" LogicalName="PierCam.Sky.sky-objects.csv" />
   </ItemGroup>
 
   <ItemGroup>

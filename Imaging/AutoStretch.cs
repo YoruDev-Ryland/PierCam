@@ -63,6 +63,17 @@ internal sealed class AutoStretchAnalyzer
     /// </summary>
     public double LastSkyLevel { get; private set; }
 
+    /// <summary>
+    /// The sky's own green median from the last <see cref="Analyze"/>, 0..1 of full scale - the
+    /// brighter part of the frame only (see Levels), or the whole frame when there is no dark part
+    /// to leave out. What recording auto-exposure steers on: the whole-frame median is the sky
+    /// only while the sky fills the frame. Where sky and dark surround each cover about half,
+    /// that median sits on the boundary between the two and leaps between them as a telescope
+    /// slews or a cloud passes, and the exposure ramp chased it - frame-to-frame flicker of 5-6%
+    /// in a 676MC recording.
+    /// </summary>
+    public double LastSkyOnlyLevel { get; private set; }
+
     /// <summary>Fraction of sampled pixels at or near full scale on the last frame.</summary>
     public double LastClippedFraction { get; private set; }
 
@@ -109,15 +120,20 @@ internal sealed class AutoStretchAnalyzer
 
         var p = new StretchParams { Black = black, White = white, Midtone = midtone };
 
-        if (_isColor && NeutraliseBackground)
+        LastSkyOnlyLevel = LastSkyLevel;
+        if (!_isColor) return p;
+
+        // The frame's own sky and dark parts (see Levels). The frame-wide medians above stay as
+        // they were for the stretch's brightness, which has always been tuned on them.
+        var c = _imgType == AsiImgType.Raw16
+            ? Levels(MemoryMarshal.Cast<byte, ushort>(raw[..(_width * _height * 2)]), sigma)
+            : Levels8(raw, sigma);
+        static double N(double v) => v / (Bins - 1.0);
+        LastSkyOnlyLevel = N(c.SkyG);
+
+        if (NeutraliseBackground)
         {
-            // Make the sky neutral, and the dark floor with it. Measured on the frame's own sky
-            // and dark parts (see Levels); the frame-wide medians above stay as they were for the
-            // brightness, which is what auto-exposure and the stretch have always been tuned on.
-            var c = _imgType == AsiImgType.Raw16
-                ? Levels(MemoryMarshal.Cast<byte, ushort>(raw[..(_width * _height * 2)]), sigma)
-                : Levels8(raw, sigma);
-            static double N(double v) => v / (Bins - 1.0);
+            // Make the sky neutral, and the dark floor with it.
             if (c.HasFloor)
             {
                 // Two levels, two unknowns per channel: the gain carries red's and blue's

@@ -373,6 +373,37 @@ internal sealed class UpdateSettings
     public DateTime? LastCheckUtc { get; set; }
 }
 
+/// <summary>
+/// Labels for the sky itself - constellations, named stars, deep-sky objects, planets - drawn
+/// from the target marker's calibration. Off by default; needs the marker's calibration.
+/// </summary>
+internal sealed class SkyOverlaySettings
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>Into the recording as well as the live view. Off: the live view only.</summary>
+    public bool BurnIntoRecordings { get; set; }
+
+    public bool ConstellationLines { get; set; } = true;
+    public bool ConstellationNames { get; set; } = true;
+    public bool StarNames { get; set; } = true;
+    public bool Planets { get; set; } = true;
+    public bool Galaxies { get; set; } = true;
+    public bool Clusters { get; set; } = true;
+    public bool Nebulae { get; set; } = true;
+    public bool Directions { get; set; } = true;
+
+    /// <summary>1 (only the most prominent) to 5 (everything in the catalogue).</summary>
+    public int Density { get; set; } = 3;
+
+    /// <summary>
+    /// Where the open sky is, outlined by hand on the live view like the blur mask, and stored the
+    /// same way - against the sensor, so it turns with the frame. Labels are drawn only inside it,
+    /// so nothing is marked behind a wall or a roof. Empty: the whole picture counts as sky.
+    /// </summary>
+    public List<CensorRegion> SkyArea { get; set; } = new();
+}
+
 internal sealed class TargetMarkerSettings
 {
     public bool Enabled { get; set; }
@@ -512,6 +543,7 @@ internal sealed class AppSettings
     public WindowPlacement Placement { get; set; } = new();
     public HousekeepingSettings Housekeeping { get; set; } = new();
     public TargetMarkerSettings TargetMarker { get; set; } = new();
+    public SkyOverlaySettings SkyOverlay { get; set; } = new();
     public UpdateSettings Updates { get; set; } = new();
     public DiscordSettings Discord { get; set; } = new();
     public CensorSettings Censor { get; set; } = new();

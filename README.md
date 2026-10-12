@@ -45,6 +45,10 @@ what it removes is noise rather than detail.
   N.I.N.A.'s Advanced API. The camera calibrates itself from the stars in nights it has already
   recorded, with no manual star-picking. Optionally burned into recordings, with a clean copy
   kept alongside.
+- **Sky overlay.** From the same calibration: constellation figures and names, named stars,
+  Messier objects, the planets and the Moon, and the compass points - steady from frame to frame,
+  only inside a sky area you outline, and only while the stars are actually in view. Live view
+  only, or burned in.
 - **Library** with a carousel and a grid, in-app playback, and batch downscaling of old nights.
 - **Built to stay light.** Nothing allocates per frame, no frame history, one reused bitmap. The
   status bar shows live memory and uptime so you can check rather than take my word for it.

@@ -512,6 +512,9 @@
                                     <c:HazardStripes Width="30" Height="7" StripeWidth="2" StripeGap="3"
                                                      VerticalAlignment="Center" Opacity="0.7"/>
                                 </StackPanel>
+                                <TextBlock x:Name="CensorTitle" Style="{StaticResource Label}"
+                                           Foreground="{DynamicResource Accent}"
+                                           HorizontalAlignment="Center" Margin="0,0,0,4" Text="BLUR MASK"/>
                                 <TextBlock x:Name="CensorHint" Style="{StaticResource Label}"
                                            Foreground="{DynamicResource TextDim}"
                                            HorizontalAlignment="Center"
@@ -734,6 +737,9 @@
                                     <TextBlock Text="" Style="{StaticResource Label}"/>
                                 </HeaderedContentControl>
 
+                                <!-- Greyed out while recording auto-exposure is on: the ramp sets
+                                     both, and a slider that does nothing reads as a broken one. -->
+                                <StackPanel x:Name="RecordingManualPanel">
                                 <DockPanel Margin="0,0,0,3">
                                     <TextBlock Text="SUB LENGTH" Style="{StaticResource FieldLabel}"/>
                                     <TextBox x:Name="ExposureValue" Style="{StaticResource ValueEntry}"
@@ -751,11 +757,12 @@
                                 </DockPanel>
                                 <Slider x:Name="GainSlider" Minimum="0" Maximum="600" IsSnapToTickEnabled="True"
                                         TickFrequency="1" ValueChanged="OnGainChanged" Margin="0,0,0,12"/>
+                                </StackPanel>
 
                                 <Rectangle Style="{StaticResource Divider}"/>
 
                                 <CheckBox x:Name="AutoExposureCheck" Checked="OnAutoExposureChanged" Unchecked="OnAutoExposureChanged"
-                                          Content="TWILIGHT RAMP"/>
+                                          Content="AUTO-EXPOSURE WHILE RECORDING"/>
                                 <TextBlock x:Name="AutoExposureHint" Style="{StaticResource FieldLabel}"
                                            TextWrapping="Wrap" Margin="0,3,0,12"/>
 
@@ -1454,7 +1461,7 @@
                                            Foreground="{DynamicResource TextFaint}"/>
                             </HeaderedContentControl>
                             <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,0,0,14"
-                                       Text="Bounds the twilight ramp. Widen for a darker sky or a slower lens."/>
+                                       Text="Limits for auto-exposure while recording. Widen for a darker sky or a slower lens."/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
@@ -1675,6 +1682,8 @@
                                 <RowDefinition Height="60"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <!-- The tab: index code and a strip, kept inside the raised 150px. That
@@ -1747,6 +1756,72 @@
                                     <TextBox x:Name="MarkerApiBox" LostFocus="OnMarkerSettingsChanged" Margin="0,0,0,8"/>
                                     <TextBlock x:Name="MarkerTelescope" Style="{StaticResource FieldLabel}" TextWrapping="Wrap"
                                                LineHeight="17"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Sky overlay: the same calibration, put to labelling the sky itself. -->
+                            <HeaderedContentControl Grid.Row="3" Style="{StaticResource PlateHead}" Margin="0,26,0,0">
+                                <HeaderedContentControl.Header>
+                                    <TextBlock Text="SKY OVERLAY" Style="{StaticResource PlateTitle}"/>
+                                </HeaderedContentControl.Header>
+                                <TextBlock Text="" Style="{StaticResource Label}"/>
+                            </HeaderedContentControl>
+
+                            <Grid Grid.Row="4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.1*"/>
+                                    <ColumnDefinition Width="28"/>
+                                    <ColumnDefinition Width="1.3*"/>
+                                    <ColumnDefinition Width="28"/>
+                                    <ColumnDefinition Width="1*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0">
+                                    <CheckBox x:Name="SkyOverlayCheck" Content="LABEL THE SKY"
+                                              Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                    <CheckBox x:Name="SkyOverlayBurnCheck" Content="ALSO BURN IT INTO RECORDINGS"
+                                              ToolTip="Off: the live view only. Independent of the marker's own setting - either can be burned in without the other."
+                                              Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                    <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,8,0,0"
+                                               Text="Constellations, named stars, deep-sky objects and planets, placed from the target marker's calibration - so the marker has to be on, and calibrated."/>
+
+                                    <TextBlock Text="SKY AREA" Style="{StaticResource FieldLabel}" Margin="0,14,0,4"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button x:Name="SkyAreaEditButton" Content="DRAW SKY AREA" Click="OnSkyAreaEdit"
+                                                ToolTip="Outline the open sky on the live view. Labels are only drawn inside it, never over walls or equipment."/>
+                                        <Button x:Name="SkyAreaClearButton" Content="CLEAR" Margin="7,0,0,0"
+                                                Style="{StaticResource BtnGhost}" Click="OnSkyAreaClear"/>
+                                    </StackPanel>
+                                    <TextBlock x:Name="SkyAreaSummary" Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                </StackPanel>
+                                <Rectangle Grid.Column="1" Width="1" HorizontalAlignment="Center"
+                                           Fill="{DynamicResource HairlineSoft}" Margin="0,2"/>
+
+                                <StackPanel x:Name="SkyOverlayTypes" Grid.Column="2">
+                                    <TextBlock Text="SHOW" Style="{StaticResource FieldLabel}" Margin="0,0,0,4"/>
+                                    <UniformGrid Columns="2">
+                                        <CheckBox x:Name="SkyLinesCheck" Content="CONSTELLATIONS" Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                        <CheckBox x:Name="SkyConNamesCheck" Content="THEIR NAMES" Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                        <CheckBox x:Name="SkyStarsCheck" Content="STAR NAMES" Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                        <CheckBox x:Name="SkyPlanetsCheck" Content="PLANETS, MOON" Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                        <CheckBox x:Name="SkyGalaxiesCheck" Content="GALAXIES" Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                        <CheckBox x:Name="SkyClustersCheck" Content="STAR CLUSTERS" Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                        <CheckBox x:Name="SkyNebulaeCheck" Content="NEBULAE" Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                        <CheckBox x:Name="SkyDirectionsCheck" Content="N E S W" Checked="OnSkyOverlayChanged" Unchecked="OnSkyOverlayChanged"/>
+                                    </UniformGrid>
+                                </StackPanel>
+                                <Rectangle Grid.Column="3" Width="1" HorizontalAlignment="Center"
+                                           Fill="{DynamicResource HairlineSoft}" Margin="0,2"/>
+
+                                <StackPanel x:Name="SkyOverlayDensityPanel" Grid.Column="4">
+                                    <DockPanel Margin="0,0,0,3">
+                                        <TextBlock Text="DENSITY" Style="{StaticResource FieldLabel}"/>
+                                        <TextBlock x:Name="SkyDensityValue" Style="{StaticResource FieldLabel}"
+                                                   Foreground="{DynamicResource Accent}" HorizontalAlignment="Right" DockPanel.Dock="Right"/>
+                                    </DockPanel>
+                                    <Slider x:Name="SkyDensitySlider" Minimum="1" Maximum="5" IsSnapToTickEnabled="True" TickFrequency="1"
+                                            ValueChanged="OnSkyDensityChanged" Margin="0,0,0,10"/>
+                                    <TextBlock x:Name="SkyOverlayStatus" Style="{StaticResource FieldLabel}" TextWrapping="Wrap" LineHeight="17"/>
                                 </StackPanel>
                             </Grid>
                         </Grid>

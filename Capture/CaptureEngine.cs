@@ -138,6 +138,16 @@ internal sealed class CaptureEngine : IDisposable
 
     public PierCam.Sky.TargetMarkerService? Marker { get; set; }
 
+    /// <summary>Constellations, named stars, planets and the rest, drawn from the marker's calibration.</summary>
+    public PierCam.Sky.SkyOverlayService? Overlay { get; set; }
+
+    /// <summary>Blends the sky overlay into a frame; never lets it disturb the frame's journey.</summary>
+    private bool DrawOverlay(byte[] rgb, int w, int h)
+    {
+        try { return Overlay?.Draw(rgb, w, h) == true; }
+        catch (Exception ex) { MarkerFault(ex); return false; }
+    }
+
     /// <summary>
     /// Posts the night to a Discord channel, when one is configured. Offered the same frame the
     /// live view gets — timestamp, marker ring and all — and only while a session is recording.
@@ -430,18 +440,23 @@ internal sealed class CaptureEngine : IDisposable
     /// night and nothing more - the clean recording carries on regardless.
     /// </summary>
     private void WriteMarkedCopy(RecordingSession session, byte[] rgb, int width, int height,
-        PierCam.Sky.MarkerPlacement? place, PierCam.Sky.TargetMarkerService? marker, ref bool drawn)
+        PierCam.Sky.MarkerPlacement? place, PierCam.Sky.TargetMarkerService? marker, ref bool drawn, ref bool overlayDrawn)
     {
         var encoder = session.MarkedCopy;
         if (encoder is null || !ReferenceEquals(session, _recording)) return;
         try
         {
-            if (place is { } at && marker is not null)
+            // Each layer only if it is meant for recordings: the copy exists for whichever of the
+            // two is burned in, and the other stays live-view only.
+            var any = false;
+            if (Overlay?.BurnIntoRecordings == true && DrawOverlay(rgb, width, height)) { overlayDrawn = true; any = true; }
+            if (place is { } at && marker is { BurnIntoRecordings: true })
             {
                 marker.Draw(rgb, width, height, at);
                 drawn = true;
-                session.MarkedFramesWithMarker++;
+                any = true;
             }
+            if (any) session.MarkedFramesWithMarker++;
             if (encoder.HasExited) throw new IOException($"ffmpeg exited unexpectedly. {encoder.LastError()}");
             encoder.WriteFrame(rgb);
 
@@ -500,6 +515,23 @@ internal sealed class CaptureEngine : IDisposable
                     _currentExposure = new ExposurePoint(
                         recording ? _settings.Camera.ExposureSeconds : _settings.Camera.PreviewExposureSeconds,
                         recording ? _settings.Camera.Gain : _settings.Camera.PreviewGain);
+
+                    // With auto-exposure on, start inside its own limits. A 32 s exposure under a
+                    // 15 s ceiling took the first frame at 32 s and the ramp then halved the light
+                    // in one step; the smoothed stretch, set up on that first frame, crushed the
+                    // next forty - dark, with the blue gone and the sky yellow-green - while it
+                    // caught up.
+                    if (recording ? _settings.Camera.AutoExposure : _settings.Camera.PreviewAutoExposure)
+                    {
+                        var start = (recording ? ExposureLimits.ForRecording(_settings.Camera) : ExposureLimits.ForPreview(_settings.Camera))
+                            .Contain(_currentExposure);
+                        if (start != _currentExposure)
+                        {
+                            _currentExposure = start;
+                            camera.SetExposure(TimeSpan.FromSeconds(start.Seconds));
+                            camera.SetGain(start.Gain);
+                        }
+                    }
                 }
 
                 var autoExposing = recording
@@ -576,7 +608,11 @@ internal sealed class CaptureEngine : IDisposable
                 // has gone to the encoder, so the recording stays clean and only the live view shows it.
                 // With a marked copy running, the recording stays clean and the copy gets the marker.
                 var burnIn = false;
+                var overlayDrawn = false;
                 var markedCopy = recording && session?.MarkedCopy is not null;
+                // The sky overlay goes under the marker, and into the recording only when asked.
+                if (recording && !markedCopy && Overlay?.BurnIntoRecordings == true)
+                    overlayDrawn = DrawOverlay(work, processor.Width, processor.Height);
                 if (place is { } burnAt && recording && marker is not null && !markedCopy)
                 {
                     try { if (marker.BurnIntoRecordings) { marker.Draw(work, processor.Width, processor.Height, burnAt); burnIn = true; } }
@@ -594,9 +630,11 @@ internal sealed class CaptureEngine : IDisposable
                         catch (Exception ex) { MarkerFault(ex); }
                     }
                     if (markedCopy && written > before)
-                        WriteMarkedCopy(session, work, processor.Width, processor.Height, place, marker, ref burnIn);
+                        WriteMarkedCopy(session, work, processor.Width, processor.Height, place, marker, ref burnIn, ref overlayDrawn);
                 }
 
+                // The live view shows whatever the recording did not already carry.
+                if (!overlayDrawn) DrawOverlay(work, processor.Width, processor.Height);
                 if (place is { } showAt && !burnIn && marker is not null)
                 {
                     try { marker.Draw(work, processor.Width, processor.Height, showAt); }
@@ -725,8 +763,12 @@ internal sealed class CaptureEngine : IDisposable
             ? ExposureLimits.ForRecording(_settings.Camera)
             : ExposureLimits.ForPreview(_settings.Camera);
 
-        var next = controller.Next(analyzer.LastSkyLevel, analyzer.LastClippedFraction,
-            _currentExposure, limits);
+        // A recording steers on the sky alone (see LastSkyOnlyLevel): the whole-frame median it
+        // used to steer on can leap between sky and surround from one frame to the next, and
+        // every leap was a correction, and every correction a flicker. The live view keeps the
+        // frame-wide level - it is allowed to jump, and has been tuned on it.
+        var level = recording ? analyzer.LastSkyOnlyLevel : analyzer.LastSkyLevel;
+        var next = controller.Next(level, analyzer.LastClippedFraction, _currentExposure, limits);
 
         if (Math.Abs(next.Seconds - _currentExposure.Seconds) < 1e-9 && next.Gain == _currentExposure.Gain)
             return;

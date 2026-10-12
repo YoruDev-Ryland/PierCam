@@ -651,9 +651,17 @@ internal sealed class TargetMarkerService : IDisposable
 
     public bool BurnIntoRecordings => _settings.TargetMarker.BurnIntoRecordings;
 
-    /// <summary>Whether a new recording should keep a clean video and burn the marker into a second copy.</summary>
+    /// <summary>
+    /// Whether a new recording should keep a clean video and burn into a second copy - the marker,
+    /// the sky overlay, or both.
+    /// </summary>
     public bool WantsMarkedCopy =>
-        _settings.TargetMarker is { Enabled: true, BurnIntoRecordings: true, KeepUnmarkedOriginal: true };
+        _settings.TargetMarker is { Enabled: true, KeepUnmarkedOriginal: true } &&
+        (_settings.TargetMarker.BurnIntoRecordings || _settings.SkyOverlay is { Enabled: true, BurnIntoRecordings: true });
+
+    /// <summary>The solved lens for a frame of this size, or null while there is no calibration.</summary>
+    public LensModel? CalibratedLensFor(int w, int h) =>
+        _settings.TargetMarker.Enabled && _phase == MarkerPhase.Calibrated ? LensFor(w, h) : null;
 
     /// <summary>Where to draw on a frame of this size right now, or null for no marker.</summary>
     public MarkerPlacement? PlacementFor(DateTime utc, int w, int h)

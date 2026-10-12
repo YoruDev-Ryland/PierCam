@@ -132,6 +132,29 @@ internal static class TextOverlay
         }
     }
 
+    /// <summary>
+    /// Every lit pixel of <paramref name="text"/> with its top-left at (x, y), unclipped, for
+    /// callers that rasterise once and draw many times (the sky overlay). Unknown characters are
+    /// skipped, as when drawing.
+    /// </summary>
+    public static void ForEachPixel(string text, int x, int y, int scale, Action<int, int> pixel)
+    {
+        var penX = x;
+        foreach (var ch in text)
+        {
+            if (Glyphs.TryGetValue(ch, out var glyph))
+                for (var gy = 0; gy < GlyphH; gy++)
+                for (var gx = 0; gx < GlyphW; gx++)
+                {
+                    if ((glyph[gy] & (1 << (GlyphW - 1 - gx))) == 0) continue;
+                    for (var sy = 0; sy < scale; sy++)
+                    for (var sx = 0; sx < scale; sx++)
+                        pixel(penX + gx * scale + sx, y + gy * scale + sy);
+                }
+            penX += (GlyphW + 1) * scale;
+        }
+    }
+
     private static void DrawGlyph(byte[] rgb, int width, int height, byte[] glyph, int x0, int y0, int scale,
         byte cr = 235, byte cg = 235, byte cb = 235)
     {

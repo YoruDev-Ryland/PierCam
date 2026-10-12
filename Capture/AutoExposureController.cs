@@ -25,12 +25,19 @@ internal readonly record struct ExposureLimits(
     int MinGain,
     int MaxGain,
     double MaxStep,
-    bool FastRecovery)
+    bool FastRecovery,
+    double Deadband = 0.005)
 {
-    /// <summary>Recording: never jumps, because a step shows in the finished video.</summary>
+    /// <summary>
+    /// Recording: never jumps, because a step shows in the finished video, and leaves alone any
+    /// error under 3%. With a half-percent deadband the ramp chased its own measurement noise -
+    /// stars, a telescope slewing through the frame - and in a recording every correction is a
+    /// visible flicker, while a sky 3% off target is not visible at all.
+    /// </summary>
     public static ExposureLimits ForRecording(CameraSettings c) => new(
         c.AutoExposureTarget, c.AutoExposureMinSeconds, c.AutoExposureMaxSeconds,
-        c.AutoExposureMinGain, c.AutoExposureMaxGain, c.AutoExposureMaxStep, FastRecovery: false);
+        c.AutoExposureMinGain, c.AutoExposureMaxGain, c.AutoExposureMaxStep, FastRecovery: false,
+        Deadband: 0.03);
 
     /// <summary>
     /// Preview: may jump. Getting a usable picture back quickly matters more than smoothness,
@@ -39,6 +46,11 @@ internal readonly record struct ExposureLimits(
     public static ExposureLimits ForPreview(CameraSettings c) => new(
         c.PreviewTarget, c.PreviewMinSeconds, c.PreviewMaxSeconds,
         c.PreviewMinGain, c.PreviewMaxGain, c.PreviewMaxStep, FastRecovery: true);
+
+    /// <summary>The nearest point inside these limits - where a ramp should start from.</summary>
+    public ExposurePoint Contain(ExposurePoint p) => new(
+        Math.Clamp(p.Seconds, MinSeconds, Math.Max(MinSeconds, MaxSeconds)),
+        Math.Clamp(p.Gain, MinGain, Math.Max(MinGain, MaxGain)));
 }
 
 /// <summary>
@@ -101,7 +113,7 @@ internal sealed class AutoExposureController
         ratio = Math.Clamp(ratio, floor, 1.0 + maxStep);
 
         var desired = current.Sensitivity * ratio;
-        if (Math.Abs(ratio - 1.0) < 0.005) { AtLimit = false; return current; }
+        if (Math.Abs(ratio - 1.0) < Math.Max(0.005, limits.Deadband)) { AtLimit = false; return current; }
 
         // Spend the change on exposure first, then on gain.
         var gainFactor = Math.Pow(10.0, current.Gain / 200.0);
