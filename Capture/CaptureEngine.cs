@@ -546,6 +546,40 @@ internal sealed class CaptureEngine : IDisposable
 
                 sw.Restart();
                 var ok = Grab(camera, raw, exposure, FramePeriod(recording), ct);
+
+                // A recorded frame far off its exposure - the roof opening on a bright sky, a
+                // session starting at sunset - is metered and retaken on the spot rather than
+                // corrected 12% a frame over the next forty. The stretch starts afresh with it,
+                // so it is not left tuned to a run of white frames.
+                if (ok && recording && autoExposing && _analyzer is { } meterBy && !ct.IsCancellationRequested)
+                {
+                    meterBy.Analyze(raw);
+                    var target = _settings.Camera.AutoExposureTarget;
+                    if (AutoExposureController.FarOff(meterBy.LastSkyOnlyLevel, meterBy.LastClippedFraction, target))
+                    {
+                        var (settled, shots) = AutoExposureController.Meter(_currentExposure,
+                            meterBy.LastSkyOnlyLevel, meterBy.LastClippedFraction, ExposureLimits.ForRecording(_settings.Camera),
+                            point =>
+                            {
+                                if (ct.IsCancellationRequested) return null;
+                                camera.SetGain(point.Gain);
+                                _message = $"Metering the sky: {point.Seconds:0.####} s at gain {point.Gain}";
+                                StatusChanged?.Invoke();
+                                if (!Grab(camera, raw, TimeSpan.FromSeconds(point.Seconds), FramePeriod(recording), ct)) return null;
+                                meterBy.Analyze(raw);
+                                return (meterBy.LastSkyOnlyLevel, meterBy.LastClippedFraction);
+                            });
+                        if (shots > 0 && !ct.IsCancellationRequested)
+                        {
+                            _currentExposure = settled;
+                            camera.SetGain(settled.Gain);
+                            exposure = TimeSpan.FromSeconds(settled.Seconds);
+                            _smoothed.Reset();
+                            ok = Grab(camera, raw, exposure, FramePeriod(recording), ct);
+                            if (ok) App.Note($"Metered the sky in {shots} test shots: {settled.Seconds:0.####} s at gain {settled.Gain}", "Exposure");
+                        }
+                    }
+                }
                 if (ct.IsCancellationRequested) break;
 
                 if (!ok)

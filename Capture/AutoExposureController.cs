@@ -153,6 +153,44 @@ internal sealed class AutoExposureController
     }
 
     /// <summary>
+    /// Whether a recorded frame is too far off to fix a step at a time: mostly blown out, or
+    /// several times too bright or too dark. At the recording ramp's 12% a frame, the sky at
+    /// sunset or a roof opening on a bright evening took forty minutes of white frames to reach -
+    /// and then the smoothed stretch, set up on all that white, crushed the next quarter of an
+    /// hour to black.
+    /// </summary>
+    public static bool FarOff(double level, double clippedFraction, double target) =>
+        clippedFraction > 0.25 || level > target * 3 || level < target / 4;
+
+    /// <summary>
+    /// Finds the right exposure now, with quick test exposures, instead of over the next forty
+    /// frames: each shot is measured and the next jumps straight at the target (up to 64x, or a
+    /// sixteenth when blown out). From a 15 s sub at sunset it takes three or four shots, each a
+    /// fraction of a second. None of them is recorded.
+    /// </summary>
+    /// <param name="shoot">Takes one test exposure at the given point and returns its sky level and clipped fraction.</param>
+    /// <returns>Where it settled, and how many test shots that took.</returns>
+    public static (ExposurePoint point, int shots) Meter(ExposurePoint start, double level, double clipped,
+        ExposureLimits recording, Func<ExposurePoint, (double level, double clipped)?> shoot, int maxShots = 8)
+    {
+        var fast = recording with { MaxStep = 64, FastRecovery = true };
+        var meter = new AutoExposureController();
+        var at = start;
+        var shots = 0;
+        while (shots < maxShots)
+        {
+            if (clipped < 0.05 && Math.Abs(Math.Log(Math.Max(level, 1e-6) / fast.Target)) < Math.Log(1.25)) break;
+            var next = meter.Next(level, clipped, at, fast);
+            if (next == at) break;                              // pinned at a limit: nothing more to gain
+            at = next;
+            shots++;
+            if (shoot(at) is not { } measured) break;
+            (level, clipped) = measured;
+        }
+        return (at, shots);
+    }
+
+    /// <summary>
     /// Converts a linear sensitivity factor to ZWO's integer gain units (0.1 dB each), rounding
     /// towards the current setting.
     ///
