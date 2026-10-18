@@ -118,9 +118,41 @@ internal sealed unsafe class AsiCamera : IDisposable
     {
         var us = (int)Math.Clamp(exposure.TotalMilliseconds * 1000.0, 32, int.MaxValue);
         SetControl(AsiControlType.Exposure, us);
+        _exposureUs = us;
     }
 
-    public void SetGain(int gain) => SetControl(AsiControlType.Gain, gain);
+    /// <summary>The exposure last sent to the camera, in microseconds; -1 before the first.</summary>
+    private int _exposureUs = -1;
+
+    /// <summary>
+    /// Sets the exposure only if the camera is not already on it. A capture is timed against the
+    /// exposure it is asked for, so the camera must actually be on that exposure: 1.11's metering
+    /// asked for 0.05 s test shots while the camera was still set to 15 s, every capture overran
+    /// its deadline, and the night filled with "Frame failed".
+    /// </summary>
+    public void EnsureExposure(TimeSpan exposure)
+    {
+        var us = (int)Math.Clamp(exposure.TotalMilliseconds * 1000.0, 32, int.MaxValue);
+        if (us != _exposureUs) SetExposure(exposure);
+    }
+
+    public void SetGain(int gain)
+    {
+        SetControl(AsiControlType.Gain, gain);
+        _gain = gain;
+    }
+
+    private int _gain = -1;
+
+    /// <summary>
+    /// Sets the gain only if the camera is not already on it. Auto-exposure moves the gain; when it
+    /// is switched off mid-session the camera stayed wherever it had been left - found when a test
+    /// left a night recording at gain 0 instead of 300.
+    /// </summary>
+    public void EnsureGain(int gain)
+    {
+        if (gain != _gain) SetGain(gain);
+    }
     public void SetOffset(int offset) => TrySetControl(AsiControlType.Offset, offset);
 
     public void SetWhiteBalance(int red, int blue)

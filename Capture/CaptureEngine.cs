@@ -544,6 +544,12 @@ internal sealed class CaptureEngine : IDisposable
                         ? _settings.Camera.ExposureSeconds
                         : _settings.Camera.PreviewExposureSeconds);
 
+                // The gain the frame should have, applied if the camera is not already on it:
+                // auto-exposure switched off mid-session used to leave it wherever it had got to.
+                camera.EnsureGain(autoExposing
+                    ? _currentExposure.Gain
+                    : recording ? _settings.Camera.Gain : _settings.Camera.PreviewGain);
+
                 sw.Restart();
                 var ok = Grab(camera, raw, exposure, FramePeriod(recording), ct);
 
@@ -557,27 +563,45 @@ internal sealed class CaptureEngine : IDisposable
                     var target = _settings.Camera.AutoExposureTarget;
                     if (AutoExposureController.FarOff(meterBy.LastSkyOnlyLevel, meterBy.LastClippedFraction, target))
                     {
+                        var before = _currentExposure;
+                        var priorMessage = _message;
+                        var shotFailed = false;
                         var (settled, shots) = AutoExposureController.Meter(_currentExposure,
                             meterBy.LastSkyOnlyLevel, meterBy.LastClippedFraction, ExposureLimits.ForRecording(_settings.Camera),
                             point =>
                             {
                                 if (ct.IsCancellationRequested) return null;
+                                // Both, every shot: a capture is timed from the exposure it is
+                                // asked for, and the camera has to really be on it.
+                                camera.SetExposure(TimeSpan.FromSeconds(point.Seconds));
                                 camera.SetGain(point.Gain);
                                 _message = $"Metering the sky: {point.Seconds:0.####} s at gain {point.Gain}";
                                 StatusChanged?.Invoke();
-                                if (!Grab(camera, raw, TimeSpan.FromSeconds(point.Seconds), FramePeriod(recording), ct)) return null;
+                                if (!Grab(camera, raw, TimeSpan.FromSeconds(point.Seconds), FramePeriod(recording), ct))
+                                {
+                                    shotFailed = true;
+                                    return null;
+                                }
                                 meterBy.Analyze(raw);
                                 return (meterBy.LastSkyOnlyLevel, meterBy.LastClippedFraction);
                             });
                         if (shots > 0 && !ct.IsCancellationRequested)
                         {
+                            // A test shot that failed measured nothing: go back to where metering
+                            // started rather than adopt an exposure that was never seen to work.
+                            if (shotFailed) settled = before;
                             _currentExposure = settled;
+                            camera.SetExposure(TimeSpan.FromSeconds(settled.Seconds));
                             camera.SetGain(settled.Gain);
                             exposure = TimeSpan.FromSeconds(settled.Seconds);
-                            _smoothed.Reset();
+                            if (!shotFailed) _smoothed.Reset();
                             ok = Grab(camera, raw, exposure, FramePeriod(recording), ct);
-                            if (ok) App.Note($"Metered the sky in {shots} test shots: {settled.Seconds:0.####} s at gain {settled.Gain}", "Exposure");
+                            if (ok && !shotFailed)
+                                App.Note($"Metered the sky in {shots} test shots: {settled.Seconds:0.####} s at gain {settled.Gain}", "Exposure");
                         }
+                        // Back to what it said before, not "metering" for the rest of the night.
+                        _message = priorMessage;
+                        StatusChanged?.Invoke();
                     }
                 }
                 if (ct.IsCancellationRequested) break;
@@ -750,6 +774,9 @@ internal sealed class CaptureEngine : IDisposable
         // So video mode is used only when the frames are actually wanted at close to the rate
         // they arrive. Everything slower takes single exposures, which cost nothing between them.
         var streaming = exposure <= TimeSpan.FromSeconds(1) && period <= TimeSpan.FromSeconds(0.5);
+
+        // The wait below is timed from this exposure, so the camera has to be on it.
+        camera.EnsureExposure(exposure);
         if (streaming)
         {
             camera.StartVideo();
