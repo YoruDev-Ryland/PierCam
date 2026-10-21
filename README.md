@@ -36,7 +36,8 @@ what it removes is noise rather than detail.
 
 - **Schedules on real astronomical twilight** for your site, so the recording window moves with
   the seasons on its own. Fixed clock times if you'd rather.
-- **Roof-aware.** Gate recording on an observatory roof status file: starts when the roof opens,
+- **Roof-aware.** Gate recording on the roof - from a roof status file, an ASCOM Alpaca safety
+  monitor, or whichever safety monitor N.I.N.A. is connected to: starts when the roof opens,
   keeps filming for a few minutes after it shuts so the closing roof is actually in the video,
   then holds and resumes into the *same* file if it reopens. One night, one video.
 - **Auto-exposure ramp** for twilight, and an auto-stretch that cancels light-pollution cast and

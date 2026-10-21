@@ -1398,13 +1398,43 @@
 
                                 <Rectangle Style="{StaticResource Divider}" Margin="0,16"/>
 
-                                <TextBlock Text="ROOF STATUS FILE" Style="{StaticResource FieldLabel}"/>
-                                <TextBox x:Name="RoofPathBox" LostFocus="OnRoofPathChanged"/>
-                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                    <Button Content="DETECT" Click="OnDetectRoofFile"
-                                            ToolTip="Look for an SFRO-style roof file on the mapped site share"/>
-                                    <Button Content="BROWSE" Margin="7,0,0,0" Click="OnBrowseRoofFile"/>
+                                <TextBlock Text="ROOF STATUS FROM" Style="{StaticResource FieldLabel}"/>
+                                <ComboBox x:Name="RoofSourceCombo" SelectionChanged="OnRoofSourceChanged" Margin="0,0,0,10"/>
+
+                                <!-- A roof status file on the site share. -->
+                                <StackPanel x:Name="RoofFilePanel">
+                                    <TextBlock Text="ROOF STATUS FILE" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="RoofPathBox" LostFocus="OnRoofPathChanged"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <Button Content="DETECT" Click="OnDetectRoofFile"
+                                                ToolTip="Look for an SFRO-style roof file on the mapped site share"/>
+                                        <Button Content="BROWSE" Margin="7,0,0,0" Click="OnBrowseRoofFile"/>
+                                    </StackPanel>
                                 </StackPanel>
+
+                                <!-- An ASCOM Alpaca safety monitor, asked directly. Safe counts as open. -->
+                                <StackPanel x:Name="RoofAlpacaPanel" Visibility="Collapsed">
+                                    <TextBlock Text="ALPACA SERVER" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AlpacaUrlBox" LostFocus="OnRoofPathChanged"
+                                             ToolTip="e.g. https://alpaca-api.tx.starfront.space"/>
+                                    <TextBlock Text="SAFETY MONITOR" Style="{StaticResource FieldLabel}" Margin="0,8,0,0"/>
+                                    <ComboBox x:Name="AlpacaDeviceCombo" SelectionChanged="OnAlpacaDeviceChanged"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <Button Content="USE ASCOM SETUP" Click="OnAlpacaFromAscom"
+                                                ToolTip="Take the server and device from the Alpaca driver made with ASCOM Driver Connect on this PC"/>
+                                        <Button Content="LIST DEVICES" Margin="7,0,0,0" Click="OnAlpacaListDevices"
+                                                ToolTip="Ask the server which safety monitors it has"/>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <!-- Whatever safety monitor N.I.N.A. is connected to. -->
+                                <StackPanel x:Name="RoofNinaPanel" Visibility="Collapsed">
+                                    <TextBlock Text="N.I.N.A. ADVANCED API" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="NinaSafetyBox" LostFocus="OnRoofPathChanged"/>
+                                    <TextBlock Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                               Text="Reads the safety monitor N.I.N.A. is connected to. Only asks; nothing in N.I.N.A. is changed."/>
+                                </StackPanel>
+
                                 <Grid Margin="0,12,0,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/>
@@ -1414,7 +1444,7 @@
                                         <TextBlock Text="POLL (S)" Style="{StaticResource FieldLabel}"/>
                                         <TextBox x:Name="RoofPollBox" LostFocus="OnRoofPathChanged"/>
                                     </StackPanel>
-                                    <StackPanel Grid.Column="2">
+                                    <StackPanel x:Name="RoofStalePanel" Grid.Column="2">
                                         <TextBlock Text="GIVE UP AFTER (MIN)" Style="{StaticResource FieldLabel}"/>
                                         <TextBox x:Name="RoofStaleBox" LostFocus="OnRoofPathChanged"/>
                                     </StackPanel>

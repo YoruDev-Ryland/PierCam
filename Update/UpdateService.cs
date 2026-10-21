@@ -386,10 +386,16 @@ internal sealed class UpdateService : IDisposable
     /// is the new version after a good install, and the old one if the install failed. Either way
     /// the camera comes back, which on an unattended machine is the part that matters.
     /// </summary>
-    public bool InstallAndRestart()
+    /// <param name="force">
+    /// The user has been told why now is a bad time - a night recording, a session about to start -
+    /// and chose to go ahead. Only ever from the Install button; the unattended path never forces.
+    /// A copy run from a folder still cannot install over itself, forced or not.
+    /// </param>
+    public bool InstallAndRestart(bool force = false)
     {
         if (DownloadedInstaller is not { } installer || !File.Exists(installer)) return false;
-        if (!CanInstallNow(out _)) return false;
+        if (!_isInstalledCopy()) return false;
+        if (!force && !CanInstallNow(out _)) return false;
 
         var exe = Path.Combine(AppContext.BaseDirectory, "PierCam.exe");
         try

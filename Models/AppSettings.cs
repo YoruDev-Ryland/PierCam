@@ -146,6 +146,17 @@ internal sealed class VideoSettings
     public int DownscaleCrf { get; set; } = 24;
 }
 
+/// <summary>Where the roof's open/closed state is read from.</summary>
+internal enum RoofSource
+{
+    /// <summary>A text file the site rewrites, e.g. SFRO's RoofStatusFile.txt.</summary>
+    File,
+    /// <summary>An ASCOM Alpaca SafetyMonitor, asked directly over HTTP.</summary>
+    Alpaca,
+    /// <summary>Whatever safety monitor N.I.N.A. is connected to, through its Advanced API.</summary>
+    Nina,
+}
+
 internal sealed class SessionSettings
 {
     /// <summary>
@@ -184,8 +195,23 @@ internal sealed class SessionSettings
     /// </summary>
     public bool RequireRoofOpen { get; set; }
 
+    /// <summary>Where the roof's state comes from. A safety monitor's "safe" counts as open.</summary>
+    public RoofSource RoofSource { get; set; } = RoofSource.File;
+
     /// <summary>Path to the roof status file. At SFRO this is on the site share, per building.</summary>
     public string RoofStatusPath { get; set; } = string.Empty;
+
+    /// <summary>An ASCOM Alpaca server, e.g. https://alpaca-api.tx.starfront.space.</summary>
+    public string AlpacaUrl { get; set; } = string.Empty;
+
+    /// <summary>The safety monitor's device number on that server; SFRO numbers them by building.</summary>
+    public int AlpacaDevice { get; set; }
+
+    /// <summary>The device's name as the server gives it, for display only.</summary>
+    public string AlpacaDeviceName { get; set; } = string.Empty;
+
+    /// <summary>N.I.N.A.'s Advanced API, when its connected safety monitor is the source.</summary>
+    public string NinaSafetyUrl { get; set; } = "http://localhost:1888";
 
     public int RoofPollSeconds { get; set; } = 30;
 

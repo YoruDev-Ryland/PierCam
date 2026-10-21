@@ -207,6 +207,13 @@ public partial class MainWindow : Window
 
     private void BuildOptionLists()
     {
+        RoofSourceCombo.ItemsSource = new[]
+        {
+            new Option<Models.RoofSource>("ROOF STATUS FILE", Models.RoofSource.File),
+            new Option<Models.RoofSource>("ALPACA SAFETY MONITOR", Models.RoofSource.Alpaca),
+            new Option<Models.RoofSource>("N.I.N.A.'S SAFETY MONITOR", Models.RoofSource.Nina),
+        };
+
         IntervalCombo.ItemsSource = new[]
         {
             new Option<int>("CONTINUOUS — BACK TO BACK", 0),
@@ -410,6 +417,12 @@ public partial class MainWindow : Window
         RoofGateCheck.IsChecked = s.RequireRoofOpen;
         RoofUnknownCheck.IsChecked = s.RecordWhenRoofUnknown;
         RoofPathBox.Text = s.RoofStatusPath;
+        SelectOption(RoofSourceCombo, s.RoofSource);
+        AlpacaUrlBox.Text = s.AlpacaUrl;
+        NinaSafetyBox.Text = s.NinaSafetyUrl;
+        SetAlpacaDevices(s.AlpacaUrl.Length > 0 ? new List<(int, string)> { (s.AlpacaDevice, s.AlpacaDeviceName) } : new List<(int, string)>(),
+            s.AlpacaDevice);
+        UpdateRoofSourcePanels();
         RoofPollBox.Text = s.RoofPollSeconds.ToString(CultureInfo.InvariantCulture);
         RoofStaleBox.Text = s.RoofAbandonMinutes.ToString(CultureInfo.InvariantCulture);
         RoofLingerBox.Text = s.RoofLingerMinutes.ToString(CultureInfo.InvariantCulture);
@@ -1531,6 +1544,10 @@ public partial class MainWindow : Window
     {
         if (_loading) return;
         _settings.Session.RoofStatusPath = RoofPathBox.Text.Trim();
+        _settings.Session.AlpacaUrl = AlpacaUrlBox.Text.Trim();
+        var nina = NinaSafetyBox.Text.Trim();
+        _settings.Session.NinaSafetyUrl = nina.Length > 0 ? nina : new Models.SessionSettings().NinaSafetyUrl;
+        NinaSafetyBox.Text = _settings.Session.NinaSafetyUrl;
         _settings.Session.RoofPollSeconds = ReadInt(RoofPollBox, _settings.Session.RoofPollSeconds, 5, 600);
         // Up to three days: the default is a day, and a box whose default sits on its own ceiling
         // can only ever be turned down.
@@ -1543,11 +1560,129 @@ public partial class MainWindow : Window
         _settings.Save();
     }
 
-    private void ApplyRoofSettings()
+    private void ApplyRoofSettings() => _roof.Configure(_settings.Session);
+
+    // ── roof status from a safety monitor ──
+    //
+    // The roof file, an ASCOM Alpaca safety monitor, or whatever safety monitor N.I.N.A. has: one
+    // choice, and the rest of PierCam - the gate, the run-on after closing, the sky overlay -
+    // sees the same open / closed / unknown whichever it is. A safety monitor's "safe" is "open".
+
+    private void OnRoofSourceChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_loading) return;
         var s = _settings.Session;
-        _roof.Configure(string.IsNullOrWhiteSpace(s.RoofStatusPath) ? null : s.RoofStatusPath,
-            s.RoofPollSeconds, s.RoofAbandonMinutes);
+        s.RoofSource = Selected(RoofSourceCombo, Models.RoofSource.File);
+        // Someone who followed SFRO's guide already has the server and device in ASCOM: use them.
+        if (s.RoofSource == Models.RoofSource.Alpaca && s.AlpacaUrl.Length == 0) UseAscomAlpaca(quiet: true);
+        UpdateRoofSourcePanels();
+        ApplyRoofSettings();
+        _settings.Save();
+        UpdateStatusBar();
+    }
+
+    private void UpdateRoofSourcePanels()
+    {
+        var source = _settings.Session.RoofSource;
+        RoofFilePanel.Visibility = source == Models.RoofSource.File ? Visibility.Visible : Visibility.Collapsed;
+        RoofAlpacaPanel.Visibility = source == Models.RoofSource.Alpaca ? Visibility.Visible : Visibility.Collapsed;
+        RoofNinaPanel.Visibility = source == Models.RoofSource.Nina ? Visibility.Visible : Visibility.Collapsed;
+        // "Give up after" is about a file nobody has rewritten; a safety monitor answers live.
+        RoofStalePanel.Visibility = source == Models.RoofSource.File ? Visibility.Visible : Visibility.Hidden;
+    }
+
+    private void OnAlpacaFromAscom(object sender, RoutedEventArgs e) => UseAscomAlpaca(quiet: false);
+
+    /// <summary>Takes the server and device from an Alpaca driver made with ASCOM Driver Connect.</summary>
+    private void UseAscomAlpaca(bool quiet)
+    {
+        var found = RoofMonitor.AscomAlpacaSafetyMonitors();
+        if (found.Count == 0)
+        {
+            if (!quiet)
+                MessageBox.Show(this, "No Alpaca safety monitor is set up in ASCOM on this PC.\n\n" +
+                    "Enter the server and press LIST DEVICES, or set one up with ASCOM Driver Connect first.",
+                    "Nothing found", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var (name, url, device) = found[0];
+        var s = _settings.Session;
+        s.AlpacaUrl = url;
+        s.AlpacaDevice = device;
+        s.AlpacaDeviceName = name;
+        AlpacaUrlBox.Text = url;
+        SetAlpacaDevices(new List<(int, string)> { (device, name) }, device);
+        ApplyRoofSettings();
+        _settings.Save();
+        // The server's own list, so the dropdown offers the other buildings too.
+        _ = ListAlpacaDevices(quiet: true);
+    }
+
+    private void OnAlpacaListDevices(object sender, RoutedEventArgs e)
+    {
+        _settings.Session.AlpacaUrl = AlpacaUrlBox.Text.Trim();
+        _ = ListAlpacaDevices(quiet: false);
+    }
+
+    private async System.Threading.Tasks.Task ListAlpacaDevices(bool quiet)
+    {
+        var url = _settings.Session.AlpacaUrl;
+        if (url.Length == 0)
+        {
+            if (!quiet) MessageBox.Show(this, "Enter the Alpaca server's address first.", "No server",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        try
+        {
+            var devices = await RoofMonitor.AlpacaSafetyMonitors(url);
+            if (devices.Count == 0)
+            {
+                if (!quiet) MessageBox.Show(this, "The server answered, but has no safety monitors.", "No safety monitors",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var keep = _settings.Session.AlpacaDevice;
+            SetAlpacaDevices(devices, devices.Exists(d => d.number == keep) ? keep : devices[0].number);
+        }
+        catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or System.Threading.Tasks.TaskCanceledException
+                                   or System.Text.Json.JsonException or InvalidOperationException or KeyNotFoundException
+                                   or UriFormatException)
+        {
+            if (!quiet) MessageBox.Show(this, $"Couldn't get the list from {url}:\n\n{ex.Message}", "Alpaca server",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private bool _settingDevices;
+
+    private void SetAlpacaDevices(List<(int number, string name)> devices, int selected)
+    {
+        _settingDevices = true;
+        try
+        {
+            var options = devices.Select(d => new Option<int>(
+                d.name.Length > 0 ? $"{d.name.ToUpperInvariant()} · #{d.number}" : $"DEVICE #{d.number}", d.number)).ToList();
+            AlpacaDeviceCombo.ItemsSource = options;
+            AlpacaDeviceCombo.SelectedItem = options.FirstOrDefault(o => o.Value == selected) ?? options.FirstOrDefault();
+            _alpacaNames = devices.ToDictionary(d => d.number, d => d.name);
+        }
+        finally { _settingDevices = false; }
+        OnAlpacaDeviceChanged(AlpacaDeviceCombo, null!);
+    }
+
+    private Dictionary<int, string> _alpacaNames = new();
+
+    private void OnAlpacaDeviceChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || _settingDevices) return;
+        if (AlpacaDeviceCombo.SelectedItem is not Option<int> chosen) return;
+        var s = _settings.Session;
+        if (s.AlpacaDevice == chosen.Value && s.AlpacaDeviceName == (_alpacaNames.GetValueOrDefault(chosen.Value) ?? "")) return;
+        s.AlpacaDevice = chosen.Value;
+        s.AlpacaDeviceName = _alpacaNames.GetValueOrDefault(chosen.Value) ?? "";
+        ApplyRoofSettings();
+        _settings.Save();
     }
 
     private void OnBrowseRoofFile(object sender, RoutedEventArgs e)
@@ -1773,10 +1908,17 @@ public partial class MainWindow : Window
 
         if (RoofStatusLine is not null)
         {
-            RoofStatusLine.Text = string.IsNullOrWhiteSpace(_settings.Session.RoofStatusPath)
-                ? "NO ROOF FILE SET — PRESS DETECT, OR BROWSE TO IT."
-                : $"{roof.State.ToString().ToUpperInvariant()} · {roof.Detail.ToUpperInvariant()}" +
-                  (roof.ReportedLocal is { } r ? $" · FILE SAYS {r:yyyy-MM-dd HH:mm:ss}" : string.Empty);
+            var s = _settings.Session;
+            RoofStatusLine.Text = s.RoofSource switch
+            {
+                Models.RoofSource.File when string.IsNullOrWhiteSpace(s.RoofStatusPath) => "NO ROOF FILE SET — PRESS DETECT, OR BROWSE TO IT.",
+                Models.RoofSource.Alpaca when string.IsNullOrWhiteSpace(s.AlpacaUrl) => "NO ALPACA SERVER SET — PRESS USE ASCOM SETUP, OR ENTER IT.",
+                Models.RoofSource.File => $"{roof.State.ToString().ToUpperInvariant()} · {roof.Detail.ToUpperInvariant()}" +
+                    (roof.ReportedLocal is { } r ? $" · FILE SAYS {r:yyyy-MM-dd HH:mm:ss}" : string.Empty),
+                // A safety monitor says safe or unsafe; the gate treats those as open and closed.
+                _ => $"{(roof.State == RoofState.Open ? "SAFE (OPEN)" : roof.State == RoofState.Closed ? "UNSAFE (CLOSED)" : "UNKNOWN")} · " +
+                     $"{roof.Detail.ToUpperInvariant()} · CHECKED {roof.CheckedLocal:HH:mm:ss}",
+            };
         }
     }
 
@@ -3999,21 +4141,32 @@ public partial class MainWindow : Window
     private async void OnInstallUpdate(object sender, RoutedEventArgs e)
     {
         if (_updates.Available is not { } release) return;
+        var title = $"Install PierCam {release.Version.ToString(2)}";
+        var plan = $"PierCam will download {Library.Format.Bytes(release.Bytes)}, close, install the new version and reopen.\n\n" +
+                   "The library and every setting are left alone.";
+
+        // A bad moment is a warning, not a lock: the reason is spelled out and the choice is the
+        // user's. Going ahead during a recording finishes the night's video first, cleanly.
+        var force = false;
         if (!_updates.CanInstallNow(out var why))
         {
-            MessageBox.Show(this, why, "Not now", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
+            var stopping = _engine.IsRecording
+                ? "Tonight's recording will be stopped and its video finished first. When PierCam reopens it starts a new recording if the night is still on.\n\n"
+                : string.Empty;
+            if (!Dialogs.Confirm(this, title, $"{why}\n\nInstall anyway?\n\n{stopping}{plan}",
+                    confirmText: "INSTALL ANYWAY", danger: true))
+                return;
+            force = true;
         }
-        if (!Dialogs.Confirm(this, $"Install PierCam {release.Version.ToString(2)}",
-                $"PierCam will download {Library.Format.Bytes(release.Bytes)}, close, install the new version and reopen.\n\n" +
-                "The library and every setting are left alone.", confirmText: "INSTALL"))
+        else if (!Dialogs.Confirm(this, title, plan, confirmText: "INSTALL"))
             return;
 
         UpdateInstallButton.IsEnabled = false;
         try
         {
             if (_updates.DownloadedInstaller is null && !await _updates.DownloadAsync()) return;
-            _updates.InstallAndRestart();
+            if (force && _engine.IsRecording) _engine.StopRecording("Installing an update");
+            _updates.InstallAndRestart(force);
         }
         finally
         {
@@ -4054,7 +4207,9 @@ public partial class MainWindow : Window
         var offer = _updates.Available;
         var installable = offer is not null && _updates.IsInstalled;
         UpdateInstallButton.Visibility = installable ? Visibility.Visible : Visibility.Collapsed;
-        UpdateInstallButton.IsEnabled = installable && _updates.CanInstallNow(out _);
+        // Always pressable once there is something to install: at a bad moment it warns and lets
+        // the user decide (see OnInstallUpdate), rather than greying out with no way round it.
+        UpdateInstallButton.IsEnabled = installable;
         UpdatePageButton.Visibility = offer is not null && !installable ? Visibility.Visible : Visibility.Collapsed;
 
         UpdateLed.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, _updates.Phase switch
