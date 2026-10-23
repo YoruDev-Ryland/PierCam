@@ -51,6 +51,9 @@ what it removes is noise rather than detail.
   only inside a sky area you outline, and only while the stars are actually in view. Live view
   only, or burned in.
 - **Library** with a carousel and a grid, in-app playback, and batch downscaling of old nights.
+- **Remote access API.** A read-only HTTP API for dashboards and other apps - over Tailscale, a
+  LAN or just this PC: the live frame, status, and every recorded night with streamable videos.
+  It documents itself at `/api/v1/docs`; see [docs/api.md](docs/api.md).
 - **Built to stay light.** Nothing allocates per frame, no frame history, one reused bitmap. The
   status bar shows live memory and uptime so you can check rather than take my word for it.
 - **Three palettes**, including a red-only Night mode that doesn't undo your dark adaptation.

@@ -43,7 +43,7 @@ internal sealed class EngineStatus
 /// buffers are allocated when a camera connects and reused until it disconnects; nothing in the
 /// steady-state loop allocates, which is the point of the whole design.
 /// </summary>
-internal sealed class CaptureEngine : IDisposable
+internal sealed class CaptureEngine : IDisposable, PierCam.Net.IApiSource
 {
     private readonly AppSettings _settings;
     private readonly object _frameLock = new();
@@ -126,6 +126,14 @@ internal sealed class CaptureEngine : IDisposable
         StatusChanged?.Invoke();
     }
     public CameraDescriptor? ConnectedCamera => _camera?.Descriptor;
+
+    /// <summary>For the remote-access API: the status as plain values.</summary>
+    public PierCam.Net.ApiSnapshot Snapshot()
+    {
+        var s = Status;
+        return new PierCam.Net.ApiSnapshot(s.State.ToString(), s.Message, ConnectedCamera?.Name, s.RecordingTitle,
+            s.RecordingStarted, s.FramesRecorded, s.NextCaptureDue);
+    }
     public string? CameraSerial => _camera is { SerialNumber.Length: > 0 } c ? c.SerialNumber : null;
 
     /// <summary>

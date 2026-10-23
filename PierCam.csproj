@@ -39,6 +39,8 @@
     <EmbeddedResource Include="Sky\bright-stars.csv" LogicalName="PierCam.Sky.bright-stars.csv" />
     <!-- Constellations, named stars and Messier objects for the sky overlay (26 KB, from d3-celestial). -->
     <EmbeddedResource Include="Sky\sky-objects.csv" LogicalName="PierCam.Sky.sky-objects.csv" />
+    <!-- The remote-access API serves its own reference, so it always matches the build. -->
+    <EmbeddedResource Include="docs\api.md" LogicalName="PierCam.Net.api.md" />
   </ItemGroup>
 
   <ItemGroup>

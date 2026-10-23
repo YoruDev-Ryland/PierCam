@@ -42,6 +42,7 @@ public partial class MainWindow : Window
     private readonly NightlyScheduler _scheduler;
     private readonly Update.UpdateService _updates;
     private readonly Net.DiscordPoster _discord;
+    private readonly Net.ApiServer _api;
     private readonly RoofMonitor _roof = new();
     private readonly Process _self = Process.GetCurrentProcess();
     private readonly DateTime _startedAt = DateTime.Now;
@@ -91,6 +92,8 @@ public partial class MainWindow : Window
         _engine.Discord = _discord;
         _engine.SessionFinished += OnSessionFinished;
         ApplyRoofSettings();
+        _api = new Net.ApiServer(_settings, _engine, _roof, () => _scheduler.NextStart(DateTime.Now), VersionText);
+        _api.Apply();
 
         // First run: lift the observing site from NINA if it is installed, so dusk-to-dawn
         // scheduling works without anyone typing coordinates. Silent — if NINA is not here,
@@ -442,6 +445,7 @@ public partial class MainWindow : Window
         LoadMarkerIntoUi();
         LoadUpdatesIntoUi();
         LoadDiscordIntoUi();
+        LoadApiIntoUi();
         LoadOrientationIntoUi();
         LoadCensorIntoUi();
         UpdateCensorUi();
@@ -3538,6 +3542,7 @@ public partial class MainWindow : Window
         _marker.Dispose();
         _overlay.Dispose();
         _updates.Dispose();
+        _api.Dispose();
         _discord.Dispose();
         _settings.Save();
     }
@@ -3974,6 +3979,70 @@ public partial class MainWindow : Window
     /// URL form, and a pier cam's config page is the sort of thing people screenshot.
     /// </summary>
     private string _discordUrl = string.Empty;
+
+    // ══════════════════════ remote access (API) ══════════════════════
+
+    private void LoadApiIntoUi()
+    {
+        var a = _settings.Api;
+        ApiEnabledCheck.IsChecked = a.Enabled;
+        ApiAnyNetworkCheck.IsChecked = a.AnyNetwork;
+        ApiKeyCheck.IsChecked = a.RequireKey;
+        ApiPortBox.Text = a.Port.ToString(CultureInfo.InvariantCulture);
+        UpdateApiUi();
+    }
+
+    private void OnApiSettingsChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        var a = _settings.Api;
+        a.Enabled = ApiEnabledCheck.IsChecked == true;
+        a.AnyNetwork = ApiAnyNetworkCheck.IsChecked == true;
+        a.RequireKey = ApiKeyCheck.IsChecked == true;
+        a.Port = ReadInt(ApiPortBox, a.Port, 1024, 65535);
+        ApiPortBox.Text = a.Port.ToString(CultureInfo.InvariantCulture);
+        _api.Apply();
+        _settings.Save();
+        UpdateApiUi();
+    }
+
+    private void OnApiCopyKey(object sender, RoutedEventArgs e)
+    {
+        if (_settings.Api.Key.Length == 0) return;
+        try { Clipboard.SetText(_settings.Api.Key); }
+        catch (System.Runtime.InteropServices.COMException) { }
+    }
+
+    private void OnApiNewKey(object sender, RoutedEventArgs e)
+    {
+        if (_settings.Api.Key.Length > 0 && !Dialogs.Confirm(this, "New access key",
+                "Make a new key? Apps using the old one will be refused until they are given the new one.", "NEW KEY"))
+            return;
+        _settings.Api.Key = Net.ApiServer.NewKey();
+        _settings.Save();
+        UpdateApiUi();
+    }
+
+    private void OnApiOpen(object sender, RoutedEventArgs e) =>
+        OpenInShell($"http://localhost:{_settings.Api.Port}/api/v1/status" +
+                    (_settings.Api.RequireKey ? $"?key={_settings.Api.Key}" : string.Empty));
+
+    private void UpdateApiUi()
+    {
+        var a = _settings.Api;
+        ApiAnyNetworkCheck.IsEnabled = ApiKeyCheck.IsEnabled = ApiPortBox.IsEnabled = a.Enabled;
+        ApiOpenButton.IsEnabled = a.Enabled && _api.Listening;
+        ApiKeyPanel.Visibility = a.RequireKey ? Visibility.Visible : Visibility.Collapsed;
+        // The key is a password: shown only as its first few characters.
+        ApiKeyText.Text = a.Key.Length == 0 ? "NONE YET" : a.Key[..Math.Min(6, a.Key.Length)].ToUpperInvariant() + "…";
+
+        var addresses = a.AnyNetwork ? Net.ApiServer.Addresses() : new List<string> { "localhost" };
+        ApiStatus.Text = !a.Enabled ? "OFF."
+            : !_api.Listening ? _api.StatusLine
+            : _api.StatusLine + "\n" + string.Join("\n", addresses.Take(4).Select(ip => $"http://{ip}:{a.Port}/api/v1/status"));
+        ApiLed.SetResourceReference(System.Windows.Shapes.Shape.FillProperty,
+            !a.Enabled ? "TextFaint" : _api.Listening ? "Signal" : "Warn");
+    }
 
     private void LoadDiscordIntoUi()
     {

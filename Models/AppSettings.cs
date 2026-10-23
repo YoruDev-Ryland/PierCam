@@ -345,6 +345,25 @@ internal sealed class CensorSettings
 /// <summary>
 /// Posting the night to a Discord channel through a webhook. See <see cref="PierCam.Net.DiscordPoster"/>.
 /// </summary>
+/// <summary>
+/// A read-only HTTP API other apps - a dashboard on another machine, over Tailscale or a LAN - can
+/// pull the live frame, status and recordings from. See <see cref="PierCam.Net.ApiServer"/>.
+/// </summary>
+internal sealed class ApiSettings
+{
+    public bool Enabled { get; set; }
+
+    public int Port { get; set; } = 1890;
+
+    /// <summary>Answer other machines too (Tailscale, the LAN). Off: this PC only.</summary>
+    public bool AnyNetwork { get; set; } = true;
+
+    /// <summary>Ask for the key below, as an X-Api-Key header or a key= query parameter.</summary>
+    public bool RequireKey { get; set; }
+
+    public string Key { get; set; } = string.Empty;
+}
+
 internal sealed class DiscordSettings
 {
     public bool Enabled { get; set; }
@@ -572,6 +591,7 @@ internal sealed class AppSettings
     public SkyOverlaySettings SkyOverlay { get; set; } = new();
     public UpdateSettings Updates { get; set; } = new();
     public DiscordSettings Discord { get; set; } = new();
+    public ApiSettings Api { get; set; } = new();
     public CensorSettings Censor { get; set; } = new();
 
     public static string DefaultLibraryRoot() =>
